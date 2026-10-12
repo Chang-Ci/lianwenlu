@@ -1,0 +1,18 @@
+*.iml
+.gradle
+/local.properties
+/.idea
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+app/build
+
+# 签名文件与打包产物不入库
+/keystore
+*.apk
+
+# IDE / 编辑器本地配置
+/.trae
