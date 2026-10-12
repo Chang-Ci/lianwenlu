@@ -68,6 +68,9 @@ class Prefs(private val context: Context) {
         // AI 工具页：写入大纲工具是否启用（默认启用）
         val aiToolOutlineEnabled = booleanPreferencesKey("ai_tool_outline_enabled")
 
+        // AI 工具页：章节梗概导入工具是否启用（默认启用）
+        val aiToolChapterEnabled = booleanPreferencesKey("ai_tool_chapter_enabled")
+
         // AI 聊天页勾选的 AI 工具 id 集合（可多选，跨会话保持）
         val aiChatTools = stringSetPreferencesKey("ai_chat_tools")
 
@@ -111,6 +114,9 @@ class Prefs(private val context: Context) {
 
     /** 「写入大纲工具」是否启用（默认启用；关闭后不出现在聊天页工具多选里） */
     val aiToolOutlineEnabled: Flow<Boolean> = context.dataStore.data.map { it[K.aiToolOutlineEnabled] ?: true }
+
+    /** 「章节梗概导入工具」是否启用（默认启用；关闭后不出现在聊天页工具多选里） */
+    val aiToolChapterEnabled: Flow<Boolean> = context.dataStore.data.map { it[K.aiToolChapterEnabled] ?: true }
 
     /** AI 聊天页勾选的 AI 工具 id 集合 */
     val aiChatTools: Flow<Set<String>> = context.dataStore.data.map { it[K.aiChatTools] ?: emptySet() }
@@ -180,6 +186,7 @@ class Prefs(private val context: Context) {
     suspend fun setAiFollowBook(v: Boolean) = writePrefs { it[K.aiFollowBook] = v }
     suspend fun setAiOutlineFirstRound(v: Boolean) = writePrefs { it[K.aiOutlineFirstRound] = v }
     suspend fun setAiToolOutlineEnabled(v: Boolean) = writePrefs { it[K.aiToolOutlineEnabled] = v }
+    suspend fun setAiToolChapterEnabled(v: Boolean) = writePrefs { it[K.aiToolChapterEnabled] = v }
     suspend fun setAiChatTools(v: Set<String>) = writePrefs { it[K.aiChatTools] = v }
     suspend fun setLastOpened(bookId: Long, chapterId: Long) = writePrefs {
         it[K.lastBookId] = bookId

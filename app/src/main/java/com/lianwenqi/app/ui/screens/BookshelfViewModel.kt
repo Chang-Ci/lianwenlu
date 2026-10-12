@@ -83,11 +83,15 @@ class BookshelfViewModel(private val container: AppContainer) : ViewModel() {
         coverColor: Int,
         volumePrefix: String,
         chapterPrefix: String,
+        groupId: Long?,
         onCreated: (Long) -> Unit
     ) = viewModelScope.launch {
-        val id = repo.createBook(title, intro, coverPath, coverColor, volumePrefix, chapterPrefix)
+        val id = repo.createBook(title, intro, coverPath, coverColor, volumePrefix, chapterPrefix, groupId)
         onCreated(id)
     }
+
+    /** 保存书籍编辑结果 */
+    fun updateBook(book: Book) = viewModelScope.launch { repo.updateBook(book) }
 
     fun togglePin(book: Book) = viewModelScope.launch { repo.setPinned(book.id, !book.pinned) }
 
@@ -107,5 +111,10 @@ class BookshelfViewModel(private val container: AppContainer) : ViewModel() {
 
     fun createGroup(name: String) = viewModelScope.launch { repo.createGroup(name) }
 
+    /** 新建分组并返回新分组 id（创建书籍表单内现场建组用） */
+    suspend fun createGroupAndGet(name: String): Long = repo.createGroup(name)
+
     suspend fun chaptersOf(bookId: Long): List<Chapter> = repo.getChapters(bookId)
+
+    suspend fun volumesOf(bookId: Long) = repo.getVolumes(bookId)
 }

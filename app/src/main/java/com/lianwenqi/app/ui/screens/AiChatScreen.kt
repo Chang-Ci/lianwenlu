@@ -124,7 +124,11 @@ import com.lianwenqi.app.data.entity.outlineCategoryLabel
 import com.lianwenqi.app.data.entity.Provider
 import com.lianwenqi.app.data.entity.Volume
 import com.lianwenqi.app.ui.appViewModel
+import com.lianwenqi.app.ui.components.BookFormResult
+import com.lianwenqi.app.ui.components.BookFormDialog
 import com.lianwenqi.app.util.AI_TOOLS
+import com.lianwenqi.app.util.AI_TOOL_IMPORT_CHAPTER
+import com.lianwenqi.app.util.AI_TOOL_WRITE_OUTLINE
 import com.lianwenqi.app.util.AiToolInfo
 import com.lianwenqi.app.util.TextTool
 import kotlinx.coroutines.delay
@@ -161,7 +165,8 @@ fun AiChatScreen(initialBookId: Long?) {
     val streamingReasoning by vm.streamingReasoning.collectAsState()
     val chatTools by vm.chatTools.collectAsState()
     val outlineToolEnabled by vm.outlineToolEnabled.collectAsState()
-    val pendingOutlineImport by vm.pendingOutlineImport.collectAsState()
+    val chapterToolEnabled by vm.chapterToolEnabled.collectAsState()
+    val pendingImports by vm.pendingImports.collectAsState()
     val importToast by vm.importToast.collectAsState()
 
     var showBooks by remember { mutableStateOf(false) }
@@ -177,6 +182,7 @@ fun AiChatScreen(initialBookId: Long?) {
     val clipboard = LocalClipboardManager.current
     val keyboard = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
+    val scope = rememberCoroutineScope()
     val ui = remember { MessageUiState() }
     val modelName = models.firstOrNull { it.id == activeModelId }?.displayName ?: "未选择模型"
     BackHandler(enabled = ui.editingId != null) { ui.editingId = null }
@@ -373,8 +379,8 @@ fun AiChatScreen(initialBookId: Long?) {
                     },
                     label = { Text("常用提示词") }
                 )
-                // AI 工具多选（目前仅「写入大纲工具」，工具页关闭后不显示）
-                if (outlineToolEnabled) {
+                // AI 工具多选（被工具页关闭的工具不出现在列表里）
+                if (outlineToolEnabled || chapterToolEnabled) {
                     AssistChip(
                         onClick = { showAiTools = true },
                         label = { Text("AI工具(${chatTools.size})") }
@@ -515,7 +521,11 @@ fun AiChatScreen(initialBookId: Long?) {
             groups = groups,
             selectedId = selBooks.singleOrNull(),
             onSelect = { vm.selectBook(it) },
-            onCreateBook = { vm.createBook(it) },
+            onCreateBook = { r ->
+                vm.createBookFull(r.title, r.intro, r.coverPath, r.coverColor, r.volumePrefix, r.chapterPrefix, r.groupId)
+            },
+            onPickCover = { uri, cb -> scope.launch { cb(vm.pickCover(uri)) } },
+            onCreateGroup = { vm.createGroupAndGet(it) },
             onDismiss = { showBooks = false }
         )
     }
@@ -539,24 +549,55 @@ fun AiChatScreen(initialBookId: Long?) {
     }
     if (showAiTools) {
         AiToolsPickerDialog(
-            tools = AI_TOOLS,
+            tools = AI_TOOLS.filter {
+                (it.id == AI_TOOL_WRITE_OUTLINE && outlineToolEnabled) ||
+                    (it.id == AI_TOOL_IMPORT_CHAPTER && chapterToolEnabled)
+            },
             selected = chatTools,
             onToggle = { vm.toggleChatTool(it) },
             onDismiss = { showAiTools = false }
         )
     }
-    // 「写入大纲工具」：AI 回答带大纲区块时，询问是否写入
-    pendingOutlineImport?.let { blocks ->
-        OutlineImportConfirmDialog(
-            blockNames = blocks.map { it.name },
-            blockCount = blocks.size,
-            books = books,
-            groups = groups,
-            resolveTarget = { vm.outlineImportTargetBookId() },
-            onCreateBook = { vm.createBook(it) },
-            onConfirm = { vm.confirmOutlineImport(it) },
-            onDismiss = { vm.dismissOutlineImport() }
-        )
+    // AI 工具：回答里解析出可导入内容时，挨个询问是否导入（大纲 / 章节梗概）
+    pendingImports.firstOrNull()?.let { head ->
+        key(head) {
+            when (head) {
+                is PendingImport.Outline -> ImportConfirmDialog(
+                    title = "写入大纲",
+                    message = "AI 生成了 ${head.blocks.size} 个大纲区块（${
+                        head.blocks.map { it.name }.joinToString("、")
+                    }），是否写入作品大纲？",
+                    confirmText = "写入大纲",
+                    books = books,
+                    groups = groups,
+                    resolveTarget = { vm.importTargetBookId() },
+                    onCreateBook = { r ->
+                        vm.createBookFull(r.title, r.intro, r.coverPath, r.coverColor, r.volumePrefix, r.chapterPrefix, r.groupId)
+                    },
+                    onPickCover = { uri, cb -> scope.launch { cb(vm.pickCover(uri)) } },
+                    onCreateGroup = { vm.createGroupAndGet(it) },
+                    onConfirm = { vm.confirmOutlineImport(it) },
+                    onDismiss = { vm.dismissPendingImport() }
+                )
+                is PendingImport.Chapters -> ImportConfirmDialog(
+                    title = "导入章节梗概",
+                    message = "AI 生成了 ${head.blocks.size} 条章节梗概（${
+                        head.blocks.map { it.chapterName }.joinToString("、")
+                    }），是否写入章节？同名章节将覆盖梗概。",
+                    confirmText = "导入",
+                    books = books,
+                    groups = groups,
+                    resolveTarget = { vm.importTargetBookId() },
+                    onCreateBook = { r ->
+                        vm.createBookFull(r.title, r.intro, r.coverPath, r.coverColor, r.volumePrefix, r.chapterPrefix, r.groupId)
+                    },
+                    onPickCover = { uri, cb -> scope.launch { cb(vm.pickCover(uri)) } },
+                    onCreateGroup = { vm.createGroupAndGet(it) },
+                    onConfirm = { vm.confirmChapterImport(it) },
+                    onDismiss = { vm.dismissPendingImport() }
+                )
+            }
+        }
     }
     // 导入结果 Toast
     val toastContext = LocalContext.current
@@ -570,26 +611,47 @@ fun AiChatScreen(initialBookId: Long?) {
         // 0 全部 / 1 跟书 / 2 跟章节
         var kind by remember { mutableIntStateOf(0) }
         var search by remember { mutableStateOf("") }
+        // 分组筛选：null=全部，-1=未分组，其余为分组 id
+        var filterGroupId by remember { mutableStateOf<Long?>(null) }
+        // 书籍筛选：null=全部，-1=未绑定（无书籍），其余为书籍 id
         var filterBookId by remember { mutableStateOf<Long?>(null) }
         var filterVolumeId by remember { mutableStateOf<Long?>(null) }
         var filterChapterId by remember { mutableStateOf<Long?>(null) }
         val filterVolumes by vm.filterVolumes.collectAsState()
         val filterChapters by vm.filterChapters.collectAsState()
 
-        val filtered = remember(sessions, kind, search, filterBookId, filterVolumeId, filterChapterId, filterChapters) {
+        // 当前分组筛选下可见的书籍
+        val groupBooks = books.filter { b ->
+            when (filterGroupId) {
+                null -> true
+                -1L -> b.groupId == null
+                else -> b.groupId == filterGroupId
+            }
+        }
+
+        val filtered = remember(sessions, kind, search, filterGroupId, filterBookId, filterVolumeId, filterChapterId, filterChapters, books) {
             sessions.filter { s ->
                 val matchKind = when (kind) {
                     1 -> s.chapterId == null && s.bookId != null
                     2 -> s.chapterId != null
                     else -> true
                 }
-                val matchBook = filterBookId == null || s.bookId == filterBookId
+                val matchBook = when (filterBookId) {
+                    null -> true
+                    -1L -> s.bookId == null
+                    else -> s.bookId == filterBookId
+                }
+                val matchGroup = when (filterGroupId) {
+                    null -> true
+                    -1L -> books.firstOrNull { it.id == s.bookId }?.groupId == null && s.bookId != null
+                    else -> books.firstOrNull { it.id == s.bookId }?.groupId == filterGroupId
+                }
                 val matchVolume = filterVolumeId == null ||
                     filterChapters.firstOrNull { it.id == s.chapterId }?.volumeId == filterVolumeId
                 val matchChapter = filterChapterId == null || s.chapterId == filterChapterId
                 val matchSearch = search.isBlank() ||
                     s.title.contains(search.trim(), ignoreCase = true)
-                matchKind && matchBook && matchVolume && matchChapter && matchSearch
+                matchKind && matchBook && matchGroup && matchVolume && matchChapter && matchSearch
             }
         }
 
@@ -612,19 +674,38 @@ fun AiChatScreen(initialBookId: Long?) {
                         FilterChip(selected = kind == 2, onClick = { kind = 2 }, label = { Text("跟章节") })
                     }
                     Spacer(Modifier.height(8.dp))
-                    FilterDropdown(
-                        label = "全部书籍",
-                        options = listOf<Pair<Long?, String>>(null to "全部书籍") +
-                            books.map { it.id to it.title },
-                        selectedId = filterBookId,
-                        onSelect = {
-                            filterBookId = it
-                            filterVolumeId = null
-                            filterChapterId = null
-                            vm.loadFilterContext(it)
-                        }
-                    )
-                    if (kind == 2 && filterBookId != null) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        FilterDropdown(
+                            label = "全部分组",
+                            options = listOf<Pair<Long?, String>>(null to "全部分组", -1L to "未分组") +
+                                groups.map { it.id to it.name },
+                            selectedId = filterGroupId,
+                            onSelect = { gid ->
+                                filterGroupId = gid
+                                // 当前选中书籍不在新分组内时清空书籍筛选
+                                val cur = filterBookId
+                                if (cur != null && cur != -1L && cur !in groupBooks.map { it.id }) {
+                                    filterBookId = null
+                                    filterVolumeId = null
+                                    filterChapterId = null
+                                }
+                            }
+                        )
+                        FilterDropdown(
+                            label = "全部书籍",
+                            options = listOf<Pair<Long?, String>>(null to "全部书籍", -1L to "未绑定") +
+                                groupBooks.map { it.id to it.title },
+                            selectedId = filterBookId,
+                            onSelect = {
+                                filterBookId = it
+                                filterVolumeId = null
+                                filterChapterId = null
+                                if (it != null && it > 0) vm.loadFilterContext(it)
+                                else vm.loadFilterContext(null)
+                            }
+                        )
+                    }
+                    if (kind == 2 && filterBookId != null && filterBookId != -1L) {
                         Spacer(Modifier.height(8.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             FilterDropdown(
@@ -2214,8 +2295,12 @@ internal fun BookPickerDialog(
     books: List<Book>,
     groups: List<BookGroup>,
     selectedId: Long?,
-    onSelect: (Long) -> Unit,
-    onCreateBook: suspend (String) -> Long,
+    /** 单选：选中新书时回调新书 id；再次点击已选中的书时回调 null（取消选择） */
+    onSelect: (Long?) -> Unit,
+    /** 完整新建书籍表单提交，返回新书 id（创建后自动选中） */
+    onCreateBook: suspend (BookFormResult) -> Long,
+    onPickCover: (android.net.Uri, (String?) -> Unit) -> Unit,
+    onCreateGroup: suspend (String) -> Long,
     onDismiss: () -> Unit
 ) {
     var search by remember { mutableStateOf("") }
@@ -2232,6 +2317,15 @@ internal fun BookPickerDialog(
         }
         val matchSearch = search.isBlank() || b.title.contains(search.trim(), ignoreCase = true)
         matchGroup && matchSearch
+    }
+
+    // 点击书籍行：未选中则选中并关闭；已选中则取消选择（停留弹窗便于改选其他书）
+    fun onBookClick(b: Book) {
+        if (b.id == selectedId) onSelect(null)
+        else {
+            onSelect(b.id)
+            onDismiss()
+        }
     }
 
     AlertDialog(
@@ -2299,13 +2393,13 @@ internal fun BookPickerDialog(
                         Row(
                             Modifier
                                 .fillMaxWidth()
-                                .clickable { onSelect(b.id); onDismiss() }
+                                .clickable { onBookClick(b) }
                                 .padding(vertical = 2.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             RadioButton(
                                 selected = b.id == selectedId,
-                                onClick = { onSelect(b.id); onDismiss() }
+                                onClick = { onBookClick(b) }
                             )
                             Column {
                                 Text(b.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -2326,33 +2420,22 @@ internal fun BookPickerDialog(
     )
 
     if (showCreate) {
-        var title by remember { mutableStateOf("") }
-        AlertDialog(
-            onDismissRequest = { showCreate = false },
-            title = { Text("新建书籍") },
-            text = {
-                OutlinedTextField(
-                    value = title,
-                    onValueChange = { title = it },
-                    label = { Text("书名") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
+        // 新建书籍：调用与书架一致的完整创建窗口（书名 / 简介 / 封面 / 分组 / 前缀）
+        BookFormDialog(
+            dialogTitle = "新建书籍",
+            initial = null,
+            groups = groups,
+            onPickCover = onPickCover,
+            onCreateGroup = onCreateGroup,
+            onConfirm = { r ->
+                scope.launch {
+                    val id = onCreateBook(r)
+                    showCreate = false
+                    onSelect(id)
+                    onDismiss()
+                }
             },
-            confirmButton = {
-                Button(
-                    enabled = title.isNotBlank(),
-                    onClick = {
-                        scope.launch {
-                            val id = onCreateBook(title)
-                            showCreate = false
-                            onSelect(id)
-                            onDismiss()
-                        }
-                    }
-                ) { Text("创建") }
-            },
-            dismissButton = { TextButton(onClick = { showCreate = false }) { Text("取消") } }
+            onDismiss = { showCreate = false }
         )
     }
 }
@@ -2585,15 +2668,18 @@ private fun AiToolsPickerDialog(
     )
 }
 
-/** 「写入大纲」确认弹窗：默认写入唯一勾选 / 会话绑定的书；可换书，也可现场新建书籍 */
+/** 通用导入确认弹窗（写入大纲 / 导入章节梗概共用）：默认写入唯一勾选 / 会话绑定的书；可换书，也可现场新建书籍 */
 @Composable
-private fun OutlineImportConfirmDialog(
-    blockNames: List<String>,
-    blockCount: Int,
+private fun ImportConfirmDialog(
+    title: String,
+    message: String,
+    confirmText: String,
     books: List<Book>,
     groups: List<BookGroup>,
     resolveTarget: suspend () -> Long?,
-    onCreateBook: suspend (String) -> Long,
+    onCreateBook: suspend (BookFormResult) -> Long,
+    onPickCover: (android.net.Uri, (String?) -> Unit) -> Unit,
+    onCreateGroup: suspend (String) -> Long,
     onConfirm: (Long) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -2604,11 +2690,11 @@ private fun OutlineImportConfirmDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("写入大纲") },
+        title = { Text(title) },
         text = {
             Column {
                 Text(
-                    "AI 生成了 $blockCount 个大纲区块（${blockNames.joinToString("、")}），是否写入作品大纲？",
+                    message,
                     maxLines = 4,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -2626,7 +2712,7 @@ private fun OutlineImportConfirmDialog(
             Button(
                 enabled = targetBookId != null,
                 onClick = { targetBookId?.let(onConfirm) }
-            ) { Text("写入大纲") }
+            ) { Text(confirmText) }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
     )
@@ -2638,6 +2724,8 @@ private fun OutlineImportConfirmDialog(
             selectedId = targetBookId,
             onSelect = { targetBookId = it },
             onCreateBook = onCreateBook,
+            onPickCover = onPickCover,
+            onCreateGroup = onCreateGroup,
             onDismiss = { showBookPicker = false }
         )
     }

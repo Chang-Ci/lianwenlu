@@ -2,10 +2,7 @@ package com.lianwenqi.app.ui.screens
 
 import android.widget.Toast
 
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -32,9 +29,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.AddPhotoAlternate
-import androidx.compose.material.icons.filled.AutoStories
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.DeleteOutline
@@ -72,25 +66,19 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImage
 import com.lianwenqi.app.data.BookSummary
 import com.lianwenqi.app.data.SortMode
 import com.lianwenqi.app.data.entity.Book
 import com.lianwenqi.app.ui.appViewModel
 import com.lianwenqi.app.ui.components.BookCover
-import com.lianwenqi.app.ui.components.CoverColors
+import com.lianwenqi.app.ui.components.BookFormDialog
 import com.lianwenqi.app.ui.components.EmptyHint
 import com.lianwenqi.app.util.ExportUtil
-import com.lianwenqi.app.util.buildTitle
 import kotlinx.coroutines.launch
-import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -130,7 +118,15 @@ fun BookshelfScreen(
     // 待确认删除：单本 / 批量
     var deleteTarget by remember { mutableStateOf<Book?>(null) }
     var confirmBatchDelete by remember { mutableStateOf(false) }
+    // 编辑目标书籍（更多菜单「编辑」）
+    var editBookTarget by remember { mutableStateOf<Book?>(null) }
     val selected = remember { mutableStateOf(setOf<Long>()) }
+
+    // 批量管理下按返回键退出多选
+    BackHandler(enabled = batchMode) {
+        batchMode = false
+        selected.value = emptySet()
+    }
 
     Scaffold(
         topBar = {
@@ -316,6 +312,12 @@ fun BookshelfScreen(
                         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        // 取消：退出批量管理并清空选择
+                        TextButton(onClick = {
+                            batchMode = false
+                            selected.value = emptySet()
+                        }) { Text("取消") }
+                        Spacer(Modifier.width(4.dp))
                         Text(
                             "已选 ${selected.value.size} 本",
                             style = MaterialTheme.typography.bodyMedium
@@ -337,15 +339,45 @@ fun BookshelfScreen(
     }
 
     if (showCreate) {
-        CreateBookDialog(
-            onDismiss = { showCreate = false },
+        BookFormDialog(
+            dialogTitle = "新建书籍",
+            initial = null,
+            groups = groups,
             onPickCover = { uri, cb -> vm.pickCover(uri, cb) },
-            onConfirm = { title, intro, coverPath, color, vPrefix, cPrefix ->
+            onCreateGroup = { vm.createGroupAndGet(it) },
+            onConfirm = { r ->
                 // 新建后停留在书架，由列表刷新显示新书
-                vm.createBook(title, intro, coverPath, color, vPrefix, cPrefix) { _ ->
+                vm.createBook(r.title, r.intro, r.coverPath, r.coverColor, r.volumePrefix, r.chapterPrefix, r.groupId) { _ ->
                     showCreate = false
                 }
-            }
+            },
+            onDismiss = { showCreate = false }
+        )
+    }
+
+    // 编辑书籍：封面 / 书名 / 简介 / 分组 / 前缀
+    editBookTarget?.let { target ->
+        BookFormDialog(
+            dialogTitle = "编辑书籍",
+            initial = target,
+            groups = groups,
+            onPickCover = { uri, cb -> vm.pickCover(uri, cb) },
+            onCreateGroup = { vm.createGroupAndGet(it) },
+            onConfirm = { r ->
+                vm.updateBook(
+                    target.copy(
+                        title = r.title,
+                        intro = r.intro,
+                        coverPath = r.coverPath,
+                        coverColor = r.coverColor,
+                        volumePrefix = r.volumePrefix,
+                        chapterPrefix = r.chapterPrefix,
+                        groupId = r.groupId
+                    )
+                )
+                editBookTarget = null
+            },
+            onDismiss = { editBookTarget = null }
         )
     }
 
@@ -390,13 +422,18 @@ fun BookshelfScreen(
                         }
                     }
                 }
+                SheetAction("编辑") {
+                    editBookTarget = item.book
+                    sheetBook = null
+                }
                 SheetAction("导出书籍") { showExportDialog = true }
                 SheetAction("移动分组") { showGroupPicker = true }
                 SheetAction("备份") {
                     sheetBook = null
                     scope.launch {
                         val chapters = vm.chaptersOf(item.book.id)
-                        val f = ExportUtil.bookToTxt(context, item.book, chapters, singleFile = true)
+                        val volumes = vm.volumesOf(item.book.id)
+                        val f = ExportUtil.bookToTxt(context, item.book, volumes, chapters, singleFile = true)
                         ExportUtil.shareFile(context, f, "text/plain", "备份书籍")
                     }
                 }
@@ -544,11 +581,11 @@ private fun doExport(
         val chapters = vm.chaptersOf(book.id)
         when (kind) {
             ExportKind.BOOK_TXT_SINGLE -> {
-                val f = ExportUtil.bookToTxt(context, book, chapters, true)
+                val f = ExportUtil.bookToTxt(context, book, vm.volumesOf(book.id), chapters, true)
                 ExportUtil.shareFile(context, f, "text/plain")
             }
             ExportKind.BOOK_TXT_ALL -> {
-                val f = ExportUtil.bookToTxt(context, book, chapters, false)
+                val f = ExportUtil.bookToTxt(context, book, vm.volumesOf(book.id), chapters, false)
                 ExportUtil.shareFile(context, f, "text/plain")
             }
             ExportKind.BOOK_DOC_SINGLE -> {
@@ -692,242 +729,6 @@ private fun BookGridItem(
             overflow = TextOverflow.Ellipsis
         )
         Text("${item.wordCount} 字", style = MaterialTheme.typography.labelSmall)
-    }
-}
-
-@Composable
-private fun CreateBookDialog(
-    onDismiss: () -> Unit,
-    onPickCover: (android.net.Uri, (String?) -> Unit) -> Unit,
-    onConfirm: (String, String, String?, Int, String, String) -> Unit
-) {
-    var title by remember { mutableStateOf("") }
-    var intro by remember { mutableStateOf("") }
-    var coverPath by remember { mutableStateOf<String?>(null) }
-    var color by remember { mutableStateOf(CoverColors.first()) }
-    var volumePrefix by remember { mutableStateOf("第%n卷") }
-    var chapterPrefix by remember { mutableStateOf("第%n章") }
-
-    val picker = rememberLauncherForActivityResult(
-        ActivityResultContracts.GetContent()
-    ) { uri -> uri?.let { onPickCover(it) { path -> coverPath = path } } }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        shape = RoundedCornerShape(24.dp),
-        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-        title = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier
-                        .size(36.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(MaterialTheme.colorScheme.primaryContainer),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        Icons.Filled.AutoStories,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-                Spacer(Modifier.width(12.dp))
-                Column {
-                    Text(
-                        "新建书籍",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Text(
-                        "填写基础信息，即刻开始创作",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        },
-        text = {
-            Column(
-                Modifier.verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                // 封面 + 配色
-                Row {
-                    Box(
-                        modifier = Modifier
-                            .width(84.dp)
-                            .aspectRatio(0.72f)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Color(color))
-                            .border(
-                                1.dp,
-                                MaterialTheme.colorScheme.outlineVariant,
-                                RoundedCornerShape(12.dp)
-                            )
-                            .clickable { picker.launch("image/*") },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        val path = coverPath
-                        if (path.isNullOrBlank()) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(
-                                    Icons.Filled.AddPhotoAlternate,
-                                    contentDescription = null,
-                                    tint = Color.White.copy(alpha = 0.92f),
-                                    modifier = Modifier.size(22.dp)
-                                )
-                                Spacer(Modifier.height(4.dp))
-                                Text(
-                                    "选择封面",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = Color.White
-                                )
-                            }
-                        } else {
-                            AsyncImage(
-                                model = File(path),
-                                contentDescription = "封面预览",
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize()
-                            )
-                        }
-                    }
-                    Spacer(Modifier.width(14.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            "封面配色",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        CoverColors.chunked(4).forEach { row ->
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                row.forEach { c ->
-                                    ColorDot(color = c, selected = c == color) {
-                                        color = c
-                                        coverPath = null
-                                    }
-                                }
-                            }
-                            Spacer(Modifier.height(8.dp))
-                        }
-                        Text(
-                            if (coverPath == null) "点击左侧色块或选择图片" else "已选择自定义封面",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-
-                SectionLabel("基本信息")
-                OutlinedTextField(
-                    value = title,
-                    onValueChange = { title = it },
-                    label = { Text("书名") },
-                    placeholder = { Text("未命名书籍") },
-                    singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = intro,
-                    onValueChange = { intro = it },
-                    label = { Text("简介（可选）") },
-                    minLines = 3,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                SectionLabel("标题前缀")
-                Text(
-                    "新建分卷 / 章节时自动顺延编号：%n 阿拉伯数字，%N 中文数字。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                OutlinedTextField(
-                    value = volumePrefix,
-                    onValueChange = { volumePrefix = it },
-                    label = { Text("分卷") },
-                    singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
-                    supportingText = {
-                        Text("示例：${buildTitle(volumePrefix.ifBlank { "第%n卷" }, 1)}、${buildTitle(volumePrefix.ifBlank { "第%n卷" }, 2)}")
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = chapterPrefix,
-                    onValueChange = { chapterPrefix = it },
-                    label = { Text("章节") },
-                    singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
-                    supportingText = {
-                        Text("示例：${buildTitle(chapterPrefix.ifBlank { "第%n章" }, 1)}、${buildTitle(chapterPrefix.ifBlank { "第%n章" }, 2)}")
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    if (title.isNotBlank()) {
-                        onConfirm(
-                            title.trim(),
-                            intro.trim(),
-                            coverPath,
-                            color,
-                            volumePrefix.ifBlank { "第%n卷" },
-                            chapterPrefix.ifBlank { "第%n章" }
-                        )
-                    }
-                },
-                enabled = title.isNotBlank(),
-                shape = RoundedCornerShape(12.dp)
-            ) { Text("创建") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss, shape = RoundedCornerShape(12.dp)) { Text("取消") }
-        }
-    )
-}
-
-/** 弹窗内的小节标题 */
-@Composable
-private fun SectionLabel(text: String) {
-    Text(
-        text,
-        style = MaterialTheme.typography.labelLarge,
-        fontWeight = FontWeight.SemiBold,
-        color = MaterialTheme.colorScheme.primary
-    )
-}
-
-/** 封面配色圆点，选中时显示主题色描边与对勾 */
-@Composable
-private fun ColorDot(color: Int, selected: Boolean, onClick: () -> Unit) {
-    Box(
-        modifier = Modifier
-            .size(26.dp)
-            .clip(RoundedCornerShape(13.dp))
-            .background(Color(color))
-            .border(
-                width = if (selected) 2.dp else 0.dp,
-                color = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
-                shape = RoundedCornerShape(13.dp)
-            )
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center
-    ) {
-        if (selected) {
-            Icon(
-                Icons.Filled.Check,
-                contentDescription = null,
-                tint = Color.White,
-                modifier = Modifier.size(14.dp)
-            )
-        }
     }
 }
 

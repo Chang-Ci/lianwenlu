@@ -11,6 +11,7 @@ import android.text.TextPaint
 import androidx.core.content.FileProvider
 import com.lianwenqi.app.data.entity.Book
 import com.lianwenqi.app.data.entity.Chapter
+import com.lianwenqi.app.data.entity.Volume
 import java.io.File
 import java.io.FileOutputStream
 
@@ -44,26 +45,55 @@ object ExportUtil {
         return file
     }
 
-    fun bookToTxt(context: Context, book: Book, chapters: List<Chapter>, singleFile: Boolean): File {
+    /**
+     * 整本导出 txt。
+     * 单文件：按分卷顺序输出，每卷先一行分卷标题，再依次输出章节（未分卷章节排在最后，不加卷标题）。
+     * 多文件：每个分卷一个子文件夹（卷名做目录名），章节 txt 放入对应卷目录；未分卷章节放根目录。
+     */
+    fun bookToTxt(
+        context: Context,
+        book: Book,
+        volumes: List<Volume>,
+        chapters: List<Chapter>,
+        singleFile: Boolean
+    ): File {
         val dir = exportDir(context)
+        // 卷 id → 卷标题；章节按 sortOrder 已排好序
+        val grouped: List<Pair<Volume?, List<Chapter>>> = buildList {
+            volumes.forEach { v -> add(v to chapters.filter { it.volumeId == v.id }) }
+            val loose = chapters.filter { it.volumeId == null }
+            if (loose.isNotEmpty()) add(null to loose)
+        }
         return if (singleFile) {
             val sb = StringBuilder()
             sb.append(book.title).append("\n\n")
             if (book.intro.isNotBlank()) sb.append(book.intro).append("\n\n")
-            chapters.forEach { c ->
-                // 整本导出不包含章节梗概
-                sb.append(c.title).append('\n')
-                sb.append(c.content).append("\n\n")
+            grouped.forEach { (volume, list) ->
+                if (list.isEmpty()) return@forEach
+                // 整本导出包含分卷标题，但不包含章节梗概
+                if (volume != null) sb.append(volume.title).append("\n\n")
+                list.forEach { c ->
+                    sb.append(c.title).append('\n')
+                    sb.append(c.content).append("\n\n")
+                }
             }
             val f = File(dir, "${safeName(book.title)}.txt")
             f.writeText(sb.toString())
             f
         } else {
             val folder = File(dir, safeName(book.title)).apply { mkdirs() }
-            chapters.forEachIndexed { i, c ->
-                File(folder, "%03d_%s.txt".format(i + 1, safeName(c.title))).writeText(
-                    c.title + "\n\n" + c.content
-                )
+            var index = 0
+            grouped.forEach { (volume, list) ->
+                if (list.isEmpty()) return@forEach
+                // 有分卷时建子目录，卷名作为目录名
+                val targetDir = if (volume == null) folder
+                else File(folder, safeName(volume.title)).apply { mkdirs() }
+                list.forEach { c ->
+                    index++
+                    File(targetDir, "%03d_%s.txt".format(index, safeName(c.title))).writeText(
+                        c.title + "\n\n" + c.content
+                    )
+                }
             }
             folder
         }

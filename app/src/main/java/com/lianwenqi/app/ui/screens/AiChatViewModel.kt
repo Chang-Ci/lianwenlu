@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.lianwenqi.app.AppContainer
 import com.lianwenqi.app.ai.AiRequest
 import com.lianwenqi.app.ai.ChatTurn
+import com.lianwenqi.app.data.AiChapterImporter
 import com.lianwenqi.app.data.AiOutlineImporter
 import com.lianwenqi.app.data.entity.AiModel
 import com.lianwenqi.app.data.entity.Book
@@ -20,9 +21,13 @@ import com.lianwenqi.app.data.entity.outlineCategoryLabel
 import com.lianwenqi.app.data.entity.Prompt
 import com.lianwenqi.app.data.entity.Provider
 import com.lianwenqi.app.data.entity.Volume
+import com.lianwenqi.app.util.AI_CHAPTER_TOOL_PROMPT
 import com.lianwenqi.app.util.AI_OUTLINE_TOOL_PROMPT
+import com.lianwenqi.app.util.AI_TOOL_IMPORT_CHAPTER
 import com.lianwenqi.app.util.AI_TOOL_WRITE_OUTLINE
+import com.lianwenqi.app.util.AiChapterBlock
 import com.lianwenqi.app.util.AiOutlineBlock
+import com.lianwenqi.app.util.parseAiChapterBlocks
 import com.lianwenqi.app.util.parseAiOutlineBlocks
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -116,17 +121,25 @@ class AiChatViewModel(
     // ---------------- AI 工具 ----------------
 
     private val outlineImporter = AiOutlineImporter(prefs, repo)
+    private val chapterImporter = AiChapterImporter(repo)
 
     /** 「写入大纲工具」是否启用（设置-AI工具页控制；关闭后不在聊天页多选中出现） */
     val outlineToolEnabled: StateFlow<Boolean> = prefs.aiToolOutlineEnabled
+        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+    /** 「章节梗概导入工具」是否启用（设置-AI工具页控制；关闭后不在聊天页多选中出现） */
+    val chapterToolEnabled: StateFlow<Boolean> = prefs.aiToolChapterEnabled
         .stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
     /** 聊天页勾选的 AI 工具 id 集合（可多选，持久化） */
     val chatTools: StateFlow<Set<String>> = prefs.aiChatTools
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
 
-    /** AI 回答完成后解析出的待写入大纲区块；非空时 UI 弹出「是否写入大纲」 */
-    val pendingOutlineImport = MutableStateFlow<List<AiOutlineBlock>?>(null)
+    /**
+     * AI 回答完成后解析出的待导入内容队列。
+     * 多选多个工具且回答里含多种标记块时逐个入队，UI 挨个询问是否导入。
+     */
+    val pendingImports = MutableStateFlow<List<PendingImport>>(emptyList())
 
     /** 导入结果提示（Toast 用，展示后由 UI 清空） */
     val importToast = MutableStateFlow<String?>(null)
@@ -140,24 +153,29 @@ class AiChatViewModel(
     private fun writeOutlineToolOn(): Boolean =
         outlineToolEnabled.value && AI_TOOL_WRITE_OUTLINE in chatTools.value
 
-    fun dismissOutlineImport() {
-        pendingOutlineImport.value = null
+    /** 「章节梗概导入工具」当前是否生效：工具启用且已在聊天页勾选 */
+    private fun chapterImportToolOn(): Boolean =
+        chapterToolEnabled.value && AI_TOOL_IMPORT_CHAPTER in chatTools.value
+
+    /** 取消当前这一项导入（队列后移，继续询问下一项） */
+    fun dismissPendingImport() {
+        pendingImports.value = pendingImports.value.drop(1)
     }
 
     fun clearImportToast() {
         importToast.value = null
     }
 
-    /** 写入大纲的默认目标书籍：唯一勾选的书 > 会话绑定的书 */
-    suspend fun outlineImportTargetBookId(): Long? =
+    /** 导入的默认目标书籍：唯一勾选的书 > 会话绑定的书 */
+    suspend fun importTargetBookId(): Long? =
         selectedBookIds.value.singleOrNull()
             ?: _sessionId.value?.let { repo.getSession(it)?.bookId }
 
-    /** 把待写入的大纲区块导入指定书籍 */
+    /** 把待导入的大纲区块写入指定书籍，然后继续队列中的下一项 */
     fun confirmOutlineImport(bookId: Long) = viewModelScope.launch {
-        val blocks = pendingOutlineImport.value ?: return@launch
-        pendingOutlineImport.value = null
-        val result = outlineImporter.import(bookId, blocks)
+        val head = pendingImports.value.firstOrNull() as? PendingImport.Outline ?: return@launch
+        pendingImports.value = pendingImports.value.drop(1)
+        val result = outlineImporter.import(bookId, head.blocks)
         importToast.value = buildString {
             append("已写入 ${result.items} 条大纲")
             if (result.newCategories.isNotEmpty()) {
@@ -165,6 +183,22 @@ class AiChatViewModel(
             }
         }
         // 刷新上下文里的大纲列表，让「大纲(n)」立即反映新条目
+        loadBookContextNow(selectedBookIds.value.firstOrNull() ?: bookId)
+    }
+
+    /** 把待导入的章节梗概写入指定书籍，然后继续队列中的下一项 */
+    fun confirmChapterImport(bookId: Long) = viewModelScope.launch {
+        val head = pendingImports.value.firstOrNull() as? PendingImport.Chapters ?: return@launch
+        pendingImports.value = pendingImports.value.drop(1)
+        val result = chapterImporter.import(bookId, head.blocks)
+        importToast.value = buildString {
+            append("已导入章节梗概：新建 ${result.created} 章")
+            if (result.updated > 0) append("，更新 ${result.updated} 章")
+            if (result.newVolumes.isNotEmpty()) {
+                append("，新建分卷：${result.newVolumes.joinToString("、")}")
+            }
+        }
+        // 刷新上下文里的章节 / 分卷列表，让「章节(n)」立即反映新章节
         loadBookContextNow(selectedBookIds.value.firstOrNull() ?: bookId)
     }
 
@@ -330,6 +364,26 @@ class AiChatViewModel(
         volumePrefix = "第%n卷",
         chapterPrefix = "第%n章"
     )
+
+    /** 完整参数新建书籍（新建书籍表单提交用），返回新书 id */
+    suspend fun createBookFull(
+        title: String,
+        intro: String,
+        coverPath: String?,
+        coverColor: Int,
+        volumePrefix: String,
+        chapterPrefix: String,
+        groupId: Long?
+    ): Long = repo.createBook(title, intro, coverPath, coverColor, volumePrefix, chapterPrefix, groupId)
+
+    /** 复制封面图到应用私有目录，返回本地路径 */
+    suspend fun pickCover(uri: android.net.Uri): String? =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            com.lianwenqi.app.util.FileUtil.copyToInternal(container.context, uri)
+        }
+
+    /** 新建分组并返回新分组 id（书籍表单内现场建组用） */
+    suspend fun createGroupAndGet(name: String): Long = repo.createGroup(name)
 
     /** 快速新建书籍并选为当前上下文书籍 */
     fun createBookAndSelect(title: String) = viewModelScope.launch {
@@ -770,6 +824,10 @@ class AiChatViewModel(
                 if (writeOutlineToolOn()) {
                     add(ChatTurn(ChatRole.SYSTEM, AI_OUTLINE_TOOL_PROMPT))
                 }
+                // 「章节梗概导入工具」：勾选后随请求附带固定格式说明
+                if (chapterImportToolOn()) {
+                    add(ChatTurn(ChatRole.SYSTEM, AI_CHAPTER_TOOL_PROMPT))
+                }
                 if (context.isNotBlank()) {
                     add(ChatTurn(ChatRole.SYSTEM, "以下是参考资料，请在写作时参考：\n$context"))
                 }
@@ -806,12 +864,19 @@ class AiChatViewModel(
                     completionTokens = result.completionTokens,
                     cachedTokens = result.cachedTokens
                 )
-                // 「写入大纲工具」：回答里带大纲标记块时，询问用户是否写入大纲
+                // AI 工具：回答里带可导入标记块时，按勾选的工具挨个入队，UI 逐个询问是否导入
+                val imports = mutableListOf<PendingImport>()
                 if (writeOutlineToolOn()) {
                     parseAiOutlineBlocks(result.content)
                         .takeIf { it.isNotEmpty() }
-                        ?.let { pendingOutlineImport.value = it }
+                        ?.let { imports += PendingImport.Outline(it) }
                 }
+                if (chapterImportToolOn()) {
+                    parseAiChapterBlocks(result.content)
+                        .takeIf { it.isNotEmpty() }
+                        ?.let { imports += PendingImport.Chapters(it) }
+                }
+                if (imports.isNotEmpty()) pendingImports.value = pendingImports.value + imports
                 return true
             } else {
                 errorMessage.value = result.error
@@ -852,3 +917,12 @@ class AiChatViewModel(
 
 private fun Set<Long>.toggle(id: Long): Set<Long> =
     if (contains(id)) this - id else this + id
+
+/** 待导入内容：AI 回答中解析出的可写入数据，逐个弹窗询问用户 */
+sealed interface PendingImport {
+    /** 写入大纲 */
+    data class Outline(val blocks: List<AiOutlineBlock>) : PendingImport
+
+    /** 导入章节梗概 */
+    data class Chapters(val blocks: List<AiChapterBlock>) : PendingImport
+}

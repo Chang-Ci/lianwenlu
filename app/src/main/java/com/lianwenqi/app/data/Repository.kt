@@ -77,7 +77,8 @@ class Repository(
         coverPath: String?,
         coverColor: Int,
         volumePrefix: String,
-        chapterPrefix: String
+        chapterPrefix: String,
+        groupId: Long? = null
     ): Long = db.withTransaction {
         val bookId = bookDao.insert(
             Book(
@@ -86,7 +87,8 @@ class Repository(
                 coverPath = coverPath,
                 coverColor = coverColor,
                 volumePrefix = volumePrefix,
-                chapterPrefix = chapterPrefix
+                chapterPrefix = chapterPrefix,
+                groupId = groupId
             )
         )
         val volumeId = volumeDao.insert(
@@ -110,6 +112,10 @@ class Repository(
         outlineDao.getByBook(bookId).forEach { outlineDao.deleteById(it.id) }
         bookDao.deleteById(bookId)
     }
+
+    /** 更新书籍信息（编辑：封面 / 书名 / 简介 / 分组 / 前缀等） */
+    suspend fun updateBook(book: Book) =
+        bookDao.update(book.copy(updatedAt = System.currentTimeMillis()))
 
     suspend fun setPinned(bookId: Long, pinned: Boolean) = bookDao.setPinned(bookId, pinned)
 
@@ -150,6 +156,14 @@ class Repository(
         )
     }
 
+    /** 以指定标题新建分卷（章节梗概导入时按 AI 给的分卷名建卷） */
+    suspend fun createVolumeWithTitle(bookId: Long, title: String): Long {
+        val volumes = volumeDao.getByBook(bookId)
+        return volumeDao.insert(
+            Volume(bookId = bookId, title = title, sortOrder = volumes.size)
+        )
+    }
+
     /** 新建章节。volumeId 为空时放入最后一卷 */
     suspend fun createChapter(bookId: Long, volumeId: Long? = null): Long {
         val book = bookDao.getById(bookId)
@@ -162,6 +176,27 @@ class Repository(
         val title = buildTitle(template, nextTitleIndex(template, siblings.map { it.title }))
         val id = chapterDao.insert(
             Chapter(bookId = bookId, volumeId = vid, title = title, sortOrder = order)
+        )
+        touchBook(bookId, id, title)
+        return id
+    }
+
+    /** 以指定标题与梗概新建章节（章节梗概导入用），追加到全书末尾 */
+    suspend fun createChapterWithSummary(
+        bookId: Long,
+        volumeId: Long?,
+        title: String,
+        summary: String
+    ): Long {
+        val chapters = chapterDao.getByBook(bookId)
+        val id = chapterDao.insert(
+            Chapter(
+                bookId = bookId,
+                volumeId = volumeId,
+                title = title,
+                summary = summary,
+                sortOrder = chapters.size
+            )
         )
         touchBook(bookId, id, title)
         return id

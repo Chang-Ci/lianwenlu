@@ -230,6 +230,7 @@ fun BookDetailScreen(
                     volumes = volumes,
                     chapters = chapters,
                     desc = desc,
+                    lastChapterId = book?.lastChapterId,
                     onOpenChapter = onOpenChapter,
                     onNewChapter = { vid -> vm.createChapter(vid) },
                     onDeleteChapter = { vm.deleteChapter(it) },
@@ -272,6 +273,7 @@ private fun CatalogTab(
     volumes: List<Volume>,
     chapters: List<Chapter>,
     desc: Boolean,
+    lastChapterId: Long?,
     onOpenChapter: (Long) -> Unit,
     onNewChapter: (Long) -> Unit,
     onDeleteChapter: (Long) -> Unit,
@@ -281,8 +283,15 @@ private fun CatalogTab(
     onSortVolumes: () -> Unit,
     onSortChapters: (Long?, String) -> Unit
 ) {
-    // 记录被「收起」的分卷，默认全部展开
-    val collapsed = remember { mutableStateOf(setOf<Long>()) }
+    // 默认只展开「上次最新编辑章节」所属的分卷，其他分卷收起；
+    // 用户手动展开 / 收起后记入 collapsedOverride，之后不再随数据变化重置
+    val defaultCollapsed = remember(volumes, chapters, lastChapterId) {
+        val lastId = lastChapterId ?: chapters.maxByOrNull { it.updatedAt }?.id
+        val lastVolumeId = chapters.firstOrNull { it.id == lastId }?.volumeId
+        volumes.map { it.id }.filter { it != lastVolumeId }.toSet()
+    }
+    var collapsedOverride by remember { mutableStateOf<Set<Long>?>(null) }
+    val collapsed = collapsedOverride ?: defaultCollapsed
     var menuTarget by remember { mutableStateOf<Any?>(null) }
     var renameTarget by remember { mutableStateOf<Any?>(null) }
     var deleteChapterTarget by remember { mutableStateOf<Chapter?>(null) }
@@ -298,16 +307,16 @@ private fun CatalogTab(
         volumeList.forEach { volume ->
             val vChapters = chapters.filter { it.volumeId == volume.id }
                 .let { if (desc) it.reversed() else it }
-            val isOpen = volume.id !in collapsed.value
+            val isOpen = volume.id !in collapsed
             item(key = "v-${volume.id}") {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(MaterialTheme.colorScheme.surfaceVariant)
                         .clickable {
-                            collapsed.value =
-                                if (isOpen) collapsed.value + volume.id
-                                else collapsed.value - volume.id
+                            collapsedOverride =
+                                if (isOpen) collapsed + volume.id
+                                else collapsed - volume.id
                         }
                         .padding(start = 10.dp, end = 2.dp, top = 2.dp, bottom = 2.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -344,7 +353,11 @@ private fun CatalogTab(
                 }
                 item(key = "new-${volume.id}") {
                     TextButton(
-                        onClick = { onNewChapter(volume.id) },
+                        onClick = {
+                            // 在收起的分卷里新建章节时，顺手展开该卷，避免看不到新章节
+                            collapsedOverride = collapsed - volume.id
+                            onNewChapter(volume.id)
+                        },
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Icon(Icons.Filled.Add, null, Modifier.size(16.dp))
