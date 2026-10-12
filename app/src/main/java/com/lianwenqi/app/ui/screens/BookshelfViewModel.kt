@@ -1,0 +1,111 @@
+package com.lianwenqi.app.ui.screens
+
+import android.net.Uri
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.lianwenqi.app.AppContainer
+import com.lianwenqi.app.data.BookSummary
+import com.lianwenqi.app.data.SortMode
+import com.lianwenqi.app.data.entity.Book
+import com.lianwenqi.app.data.entity.BookGroup
+import com.lianwenqi.app.data.entity.Chapter
+import com.lianwenqi.app.util.FileUtil
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+
+@OptIn(ExperimentalCoroutinesApi::class)
+class BookshelfViewModel(private val container: AppContainer) : ViewModel() {
+
+    private val repo = container.repository
+    private val prefs = container.prefs
+
+    val nightMode: StateFlow<Boolean> =
+        prefs.nightMode.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    val listMode: StateFlow<Boolean> =
+        prefs.listMode.stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+    val sortMode: StateFlow<String> =
+        prefs.sortMode.stateIn(viewModelScope, SharingStarted.Eagerly, "TIME")
+
+    val sortAsc: StateFlow<Boolean> =
+        prefs.sortAsc.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    val groups: StateFlow<List<BookGroup>> =
+        repo.observeGroups().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val books: StateFlow<List<BookSummary>> =
+        combine(prefs.sortMode, prefs.sortAsc) { mode, asc -> SortMode.valueOf(mode) to asc }
+            .flatMapLatest { (mode, asc) -> repo.observeBookSummaries(mode, asc) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    /** 当前筛选的分组 id，null 表示全部 */
+    val groupFilter = MutableStateFlow<Long?>(null)
+
+    /** 按分组筛选后的书籍列表 */
+    val visibleBooks: StateFlow<List<BookSummary>> =
+        combine(books, groupFilter) { list, gid ->
+            if (gid == null) list else list.filter { it.book.groupId == gid }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    fun setGroupFilter(groupId: Long?) {
+        groupFilter.value = groupId
+    }
+
+    fun toggleNight() = viewModelScope.launch { prefs.setNightMode(!nightMode.value) }
+
+    fun toggleListMode() = viewModelScope.launch { prefs.setListMode(!listMode.value) }
+
+    fun setSort(mode: SortMode, asc: Boolean) = viewModelScope.launch {
+        prefs.setSortMode(mode.name)
+        prefs.setSortAsc(asc)
+    }
+
+    fun pickCover(uri: Uri, onPicked: (String?) -> Unit) {
+        viewModelScope.launch {
+            val path = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                FileUtil.copyToInternal(container.context, uri)
+            }
+            onPicked(path)
+        }
+    }
+
+    fun createBook(
+        title: String,
+        intro: String,
+        coverPath: String?,
+        coverColor: Int,
+        volumePrefix: String,
+        chapterPrefix: String,
+        onCreated: (Long) -> Unit
+    ) = viewModelScope.launch {
+        val id = repo.createBook(title, intro, coverPath, coverColor, volumePrefix, chapterPrefix)
+        onCreated(id)
+    }
+
+    fun togglePin(book: Book) = viewModelScope.launch { repo.setPinned(book.id, !book.pinned) }
+
+    fun deleteBook(bookId: Long) = viewModelScope.launch { repo.deleteBook(bookId) }
+
+    /** 批量删除所选书籍 */
+    fun deleteBooks(ids: Set<Long>) = viewModelScope.launch { ids.forEach { repo.deleteBook(it) } }
+
+    fun moveToGroup(bookId: Long, groupId: Long?) = viewModelScope.launch {
+        repo.moveToGroup(bookId, groupId)
+    }
+
+    /** 批量把所选书籍纳入分组 */
+    fun moveBooksToGroup(ids: Set<Long>, groupId: Long?) = viewModelScope.launch {
+        ids.forEach { repo.moveToGroup(it, groupId) }
+    }
+
+    fun createGroup(name: String) = viewModelScope.launch { repo.createGroup(name) }
+
+    suspend fun chaptersOf(bookId: Long): List<Chapter> = repo.getChapters(bookId)
+}

@@ -1,0 +1,144 @@
+package com.lianwenqi.app.data
+
+import android.content.Context
+import androidx.room.Database
+import androidx.room.Room
+import androidx.room.RoomDatabase
+import androidx.room.TypeConverters
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
+import com.lianwenqi.app.data.dao.AiModelDao
+import com.lianwenqi.app.data.dao.BookDao
+import com.lianwenqi.app.data.dao.BookGroupDao
+import com.lianwenqi.app.data.dao.ChapterDao
+import com.lianwenqi.app.data.dao.ChatDao
+import com.lianwenqi.app.data.dao.OutlineDao
+import com.lianwenqi.app.data.dao.PromptDao
+import com.lianwenqi.app.data.dao.ProviderDao
+import com.lianwenqi.app.data.dao.VolumeDao
+import com.lianwenqi.app.data.entity.AiModel
+import com.lianwenqi.app.data.entity.Book
+import com.lianwenqi.app.data.entity.BookGroup
+import com.lianwenqi.app.data.entity.Chapter
+import com.lianwenqi.app.data.entity.ChatMessage
+import com.lianwenqi.app.data.entity.ChatSession
+import com.lianwenqi.app.data.entity.OutlineItem
+import com.lianwenqi.app.data.entity.Prompt
+import com.lianwenqi.app.data.entity.Provider
+import com.lianwenqi.app.data.entity.Volume
+
+@Database(
+    entities = [
+        BookGroup::class,
+        Book::class,
+        Volume::class,
+        Chapter::class,
+        OutlineItem::class,
+        Prompt::class,
+        Provider::class,
+        AiModel::class,
+        ChatSession::class,
+        ChatMessage::class
+    ],
+    version = 10,
+    exportSchema = false
+)
+@TypeConverters(Converters::class)
+abstract class AppDatabase : RoomDatabase() {
+    abstract fun bookGroupDao(): BookGroupDao
+    abstract fun bookDao(): BookDao
+    abstract fun volumeDao(): VolumeDao
+    abstract fun chapterDao(): ChapterDao
+    abstract fun outlineDao(): OutlineDao
+    abstract fun promptDao(): PromptDao
+    abstract fun providerDao(): ProviderDao
+    abstract fun aiModelDao(): AiModelDao
+    abstract fun chatDao(): ChatDao
+
+    companion object {
+        @Volatile
+        private var INSTANCE: AppDatabase? = null
+
+        /** v2：聊天消息支持「重新生成」的多版本切换与深度思考内容 */
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE chat_message ADD COLUMN replyToId INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE chat_message ADD COLUMN variantIndex INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE chat_message ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("ALTER TABLE chat_message ADD COLUMN reasoning TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        /**
+         * v3：旧默认的 2048 最大输出 token 会被推理模型的思考过程吃满，导致正文为空，
+         * 这里把过小的值统一提高到 8192。
+         */
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("UPDATE ai_model SET maxTokens = 8192 WHERE maxTokens < 8192")
+            }
+        }
+
+        /** v4：聊天消息记录发送时选中的上下文，用于在消息上回显「文件清单」 */
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE chat_message ADD COLUMN contextSnapshot TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        /** v5：模型支持用户自定义显示名，并区分厂商模型（标识只读）与用户自建模型 */
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE ai_model ADD COLUMN alias TEXT NOT NULL DEFAULT ''")
+                // 既有模型默认按「用户自建」处理，保证仍可修改
+                db.execSQL("ALTER TABLE ai_model ADD COLUMN custom INTEGER NOT NULL DEFAULT 1")
+            }
+        }
+
+        /** v6：模型支持「最大上下文条数」，聊天消息记录本次消耗的 token 用量 */
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE ai_model ADD COLUMN maxContext INTEGER NOT NULL DEFAULT 20")
+                db.execSQL("ALTER TABLE chat_message ADD COLUMN promptTokens INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE chat_message ADD COLUMN completionTokens INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /** v7：会话可绑定发起时的章节，用于章节内 AI 抽屉恢复历史对话 */
+        private val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE chat_session ADD COLUMN chapterId INTEGER")
+            }
+        }
+
+        /** v8：回答正文支持折叠，折叠状态随消息持久化 */
+        private val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE chat_message ADD COLUMN contentCollapsed INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /** v9：记录本次输入中命中缓存的 token 数，用于展示缓存命中率 */
+        private val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE chat_message ADD COLUMN cachedTokens INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /** v10：随消息一起发给模型但不显示在气泡里的附加提示词（如「＋本章梗概」） */
+        private val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE chat_message ADD COLUMN promptExtra TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        fun get(context: Context): AppDatabase =
+            INSTANCE ?: synchronized(this) {
+                INSTANCE ?: Room.databaseBuilder(
+                    context.applicationContext,
+                    AppDatabase::class.java,
+                    "lianwenqi.db"
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10).build().also { INSTANCE = it }
+            }
+    }
+}

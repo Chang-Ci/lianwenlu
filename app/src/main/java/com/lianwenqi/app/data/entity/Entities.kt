@@ -1,0 +1,233 @@
+package com.lianwenqi.app.data.entity
+
+import androidx.room.Entity
+import androidx.room.Index
+import androidx.room.PrimaryKey
+
+/** 书籍分组 */
+@Entity(tableName = "book_group")
+data class BookGroup(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val name: String,
+    val sortOrder: Int = 0,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+/** 书籍 */
+@Entity(tableName = "book")
+data class Book(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val title: String,
+    val intro: String = "",
+    /** 封面本地路径，为空时用纯色封面 */
+    val coverPath: String? = null,
+    /** 纯色封面底色（ARGB） */
+    val coverColor: Int = 0xFF3F51B5.toInt(),
+    /** 分卷标题前缀，%n 阿拉伯数字，%N 中文数字 */
+    val volumePrefix: String = "第%n卷",
+    /** 章节标题前缀 */
+    val chapterPrefix: String = "第%n章",
+    val pinned: Boolean = false,
+    val groupId: Long? = null,
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis(),
+    /** 上次编辑的章节，用于书架展示 */
+    val lastChapterId: Long? = null,
+    val lastChapterTitle: String? = null
+)
+
+/** 分卷 */
+@Entity(tableName = "volume", indices = [Index("bookId")])
+data class Volume(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val bookId: Long,
+    val title: String,
+    val sortOrder: Int = 0,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+/** 章节：标题 + 正文 + 梗概 */
+@Entity(tableName = "chapter", indices = [Index("bookId"), Index("volumeId")])
+data class Chapter(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val bookId: Long,
+    val volumeId: Long? = null,
+    val title: String,
+    /** 章节梗概 */
+    val summary: String = "",
+    /** 正文 */
+    val content: String = "",
+    /** 上一次退出时光标位置（快速定位） */
+    val lastCursor: Int = 0,
+    val sortOrder: Int = 0,
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
+/** 内置的大纲分类（标签）。key 即存储值，label 为展示名 */
+enum class OutlineCategory(val label: String) {
+    STORY("故事大纲"),
+    CHARACTER("人设"),
+    WORLD("世界观"),
+    INSPIRATION("灵感库")
+}
+
+/** 书籍默认的大纲分类标签（存储值） */
+val defaultOutlineKeys: List<String> = OutlineCategory.entries.map { it.name }
+
+/** 存储值 → 展示名；自定义标签的存储值即展示名 */
+fun outlineCategoryLabel(key: String): String =
+    OutlineCategory.entries.firstOrNull { it.name == key }?.label ?: key
+
+/** 作品大纲条目 */
+@Entity(tableName = "outline_item", indices = [Index("bookId")])
+data class OutlineItem(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val bookId: Long,
+    /** 所属分类标签的存储值（内置分类用 OutlineCategory.name，自定义标签用标签名本身） */
+    val category: String = OutlineCategory.STORY.name,
+    /** 明线 / 暗线等标签 */
+    val tag: String = "",
+    val title: String,
+    val content: String = "",
+    val sortOrder: Int = 0,
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
+/** 提示词库 */
+@Entity(tableName = "prompt")
+data class Prompt(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val title: String,
+    val content: String,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+enum class ApiType(val label: String) {
+    CHAT_COMPLETIONS("chat completions"),
+    RESPONSES("responses"),
+    ANTHROPIC_MESSAGES("anthropic messages")
+}
+
+/** AI 供应商 */
+@Entity(tableName = "provider")
+data class Provider(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val name: String,
+    val baseUrl: String,
+    val apiType: ApiType = ApiType.CHAT_COMPLETIONS,
+    val apiKey: String = "",
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+/** 供应商下的模型 */
+@Entity(tableName = "ai_model", indices = [Index("providerId")])
+data class AiModel(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val providerId: Long,
+    /** 模型标识（请求时提交的 model 名） */
+    val name: String,
+    /** 用户自定义的显示名，用于区分同类模型；为空时回退显示 [name] */
+    val alias: String = "",
+    val temperature: Float = 0.8f,
+    /** 最大输出 token；<= 0 表示不限（不向接口发送 max_tokens） */
+    val maxTokens: Int = 8192,
+    /** 最多携带的历史消息条数（上下文窗口）；0 表示不限（携带全部历史），否则取最近 N 条 */
+    val maxContext: Int = 20,
+    val isDefault: Boolean = false,
+    /** 预设提示词 */
+    val systemPrompt: String = "",
+    /** true：用户手动创建的模型，模型标识可修改；false：来自厂商列表，模型标识只读 */
+    val custom: Boolean = false
+) {
+    /** 界面展示用名称 */
+    val displayName: String get() = alias.ifBlank { name }
+}
+
+enum class ChatRole { SYSTEM, USER, ASSISTANT }
+
+@Entity(tableName = "chat_session")
+data class ChatSession(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val title: String = "新对话",
+    val bookId: Long? = null,
+    /** 从章节内发起的会话所绑定的章节；为空表示从导航栏发起（不记忆） */
+    val chapterId: Long? = null,
+    val modelId: Long? = null,
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
+@Entity(tableName = "chat_message", indices = [Index("sessionId")])
+data class ChatMessage(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val sessionId: Long,
+    val role: ChatRole,
+    val content: String,
+    /** 助手回答所回应的用户消息 id；0 表示独立消息（不参与重新生成的版本切换） */
+    val replyToId: Long = 0,
+    /** 同一用户消息下的回答版本序号，从 0 开始 */
+    val variantIndex: Int = 0,
+    /** 多版本回答中当前展示的版本 */
+    val active: Boolean = true,
+    /** 模型的深度思考内容，为空表示没有思考过程 */
+    val reasoning: String = "",
+    /** 发送这条消息时选中的上下文快照（书籍/章节/大纲），用于在消息上回显「文件清单」 */
+    val contextSnapshot: String = "",
+    /**
+     * 随消息一起发给模型、但不显示在对话气泡里的附加提示词（如「＋本章梗概」的章节名与梗概）。
+     * 它与 content 一起落库，重建历史时原样拼回，保证跨轮请求前缀逐字节一致。
+     */
+    val promptExtra: String = "",
+    /** 本次回答消耗的输入 token（usage.prompt_tokens），0 表示未记录 */
+    val promptTokens: Int = 0,
+    /* 本次回答消耗的输出 token（usage.completion_tokens），0 表示未记录 */
+    val completionTokens: Int = 0,
+    /** 本次输入中命中缓存的 token 数，用于计算缓存命中率，0 表示未记录 */
+    val cachedTokens: Int = 0,
+    /** 回答正文是否被用户收起；收起后再次打开会话仍保持收起 */
+    val contentCollapsed: Boolean = false,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+/**
+ * 一条消息发送时的上下文选择快照。
+ * 编码为「书籍id|章节id|大纲id|含梗概|含正文」的紧凑字符串存入 [ChatMessage.contextSnapshot]。
+ */
+data class ContextSnapshot(
+    val bookIds: List<Long> = emptyList(),
+    val chapterIds: List<Long> = emptyList(),
+    val outlineIds: List<Long> = emptyList(),
+    val includeSummary: Boolean = true,
+    val includeContent: Boolean = true,
+    /** 章节是否处于「全选」状态：为真时忽略 [chapterIds]，按当前书本的全部章节重新展开 */
+    val chapterAll: Boolean = false
+) {
+    val isEmpty: Boolean
+        get() = bookIds.isEmpty() && chapterIds.isEmpty() && outlineIds.isEmpty()
+
+    fun encode(): String = listOf(
+        bookIds.joinToString(","),
+        chapterIds.joinToString(","),
+        outlineIds.joinToString(","),
+        if (includeSummary) "1" else "0",
+        if (includeContent) "1" else "0",
+        if (chapterAll) "1" else "0"
+    ).joinToString("|")
+}
+
+/** 解析 [ChatMessage.contextSnapshot]；旧消息没有快照时返回空快照 */
+fun decodeContextSnapshot(raw: String): ContextSnapshot {
+    if (raw.isBlank()) return ContextSnapshot()
+    val parts = raw.split("|")
+    fun ids(part: String?): List<Long> =
+        part?.split(",")?.mapNotNull { it.trim().toLongOrNull() } ?: emptyList()
+    return ContextSnapshot(
+        bookIds = ids(parts.getOrNull(0)),
+        chapterIds = ids(parts.getOrNull(1)),
+        outlineIds = ids(parts.getOrNull(2)),
+        includeSummary = parts.getOrNull(3) != "0",
+        includeContent = parts.getOrNull(4) != "0",
+        chapterAll = parts.getOrNull(5) == "1"
+    )
+}
