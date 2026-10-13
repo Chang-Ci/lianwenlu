@@ -19,18 +19,18 @@ data class AiChapterImportResult(
  * chapterName 在该卷已存在 → 覆盖该章梗概，否则新建章节。
  * 新章节按区块出现的先后顺序追加到对应卷末尾。
  */
-class AiChapterImporter(private val repo: Repository) {
+class AiChapterImporter(private val bookRepository: BookRepository) {
 
     suspend fun import(bookId: Long, blocks: List<AiChapterBlock>): AiChapterImportResult {
         var created = 0
         var updated = 0
         val newVolumes = mutableListOf<String>()
 
-        var volumes = repo.getVolumes(bookId)
+        var volumes = bookRepository.getVolumes(bookId)
         if (volumes.isEmpty()) {
             // 没有分卷时先创建首卷，空 volume 的章节统一塞入第一卷
-            repo.createVolume(bookId)
-            volumes = repo.getVolumes(bookId)
+            bookRepository.createVolume(bookId)
+            volumes = bookRepository.getVolumes(bookId)
             volumes.firstOrNull()?.let { newVolumes += it.title }
         }
         val firstVolumeId = volumes.first().id
@@ -42,12 +42,12 @@ class AiChapterImporter(private val repo: Repository) {
             val volumeId: Long = when {
                 block.volume.isBlank() -> firstVolumeId
                 else -> {
-                    val existing = repo.getVolumes(bookId).firstOrNull { it.title == block.volume }?.id
+                    val existing = bookRepository.getVolumes(bookId).firstOrNull { it.title == block.volume }?.id
                         ?: createdVolumeIds[block.volume]
                     if (existing != null) {
                         existing
                     } else {
-                        val id = repo.createVolumeWithTitle(bookId, block.volume)
+                        val id = bookRepository.createVolumeWithTitle(bookId, block.volume)
                         createdVolumeIds[block.volume] = id
                         newVolumes += block.volume
                         id
@@ -55,13 +55,13 @@ class AiChapterImporter(private val repo: Repository) {
                 }
             }
             // 该卷已有同名章节则覆盖梗概，否则新建章节
-            val exist = repo.getChapters(bookId)
+            val exist = bookRepository.getChapters(bookId)
                 .firstOrNull { it.volumeId == volumeId && it.title == block.chapterName }
             if (exist != null) {
-                repo.saveChapter(exist.copy(summary = block.summary))
+                bookRepository.saveChapter(exist.copy(summary = block.summary))
                 updated++
             } else {
-                repo.createChapterWithSummary(bookId, volumeId, block.chapterName, block.summary)
+                bookRepository.createChapterWithSummary(bookId, volumeId, block.chapterName, block.summary)
                 created++
             }
         }

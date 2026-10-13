@@ -20,39 +20,40 @@ class BookDetailViewModel(
     private val bookId: Long
 ) : ViewModel() {
 
-    private val repo = container.repository
+    private val bookRepository = container.bookRepository
+    private val outlineRepository = container.outlineRepository
 
     val book: StateFlow<Book?> =
-        repo.observeBook(bookId).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+        bookRepository.observeBook(bookId).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
     val volumes: StateFlow<List<Volume>> =
-        repo.observeVolumes(bookId).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        bookRepository.observeVolumes(bookId).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val chapters: StateFlow<List<Chapter>> =
-        repo.observeChapters(bookId).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        bookRepository.observeChapters(bookId).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val outline: StateFlow<List<OutlineItem>> =
-        repo.observeOutline(bookId).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        outlineRepository.observeOutline(bookId).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    fun createVolume() = viewModelScope.launch { repo.createVolume(bookId) }
+    fun createVolume() = viewModelScope.launch { bookRepository.createVolume(bookId) }
 
     fun createChapter(volumeId: Long? = null, onCreated: (Long) -> Unit = {}) = viewModelScope.launch {
-        val id = repo.createChapter(bookId, volumeId)
+        val id = bookRepository.createChapter(bookId, volumeId)
         onCreated(id)
     }
 
-    fun deleteChapter(chapterId: Long) = viewModelScope.launch { repo.deleteChapter(bookId, chapterId) }
+    fun deleteChapter(chapterId: Long) = viewModelScope.launch { bookRepository.deleteChapter(bookId, chapterId) }
 
-    fun deleteVolume(volumeId: Long) = viewModelScope.launch { repo.deleteVolume(volumeId) }
+    fun deleteVolume(volumeId: Long) = viewModelScope.launch { bookRepository.deleteVolume(volumeId) }
 
     fun renameVolume(volume: Volume, title: String) =
-        viewModelScope.launch { repo.renameVolume(volume, title) }
+        viewModelScope.launch { bookRepository.renameVolume(volume, title) }
 
     fun renameChapter(chapter: Chapter, title: String) = viewModelScope.launch {
-        repo.saveChapter(chapter.copy(title = title))
+        bookRepository.saveChapter(chapter.copy(title = title))
     }
 
-    fun saveOutline(item: OutlineItem) = viewModelScope.launch { repo.saveOutline(item) }
+    fun saveOutline(item: OutlineItem) = viewModelScope.launch { outlineRepository.saveOutline(item) }
 
     /** 大纲字段表：未保存过时返回 null，由界面套用默认字段 */
     suspend fun outlineFields(category: String): List<String>? =
@@ -62,7 +63,13 @@ class BookDetailViewModel(
         container.prefs.setOutlineFields(bookId, category, names)
     }
 
-    fun deleteOutline(id: Long) = viewModelScope.launch { repo.deleteOutline(id) }
+    fun deleteOutline(id: Long) = viewModelScope.launch { outlineRepository.deleteOutline(id) }
+
+    /** 把某个大纲条目移动到另一个分类标签下 */
+    fun moveOutline(item: OutlineItem, category: String) = viewModelScope.launch {
+        if (category == item.category) return@launch
+        outlineRepository.saveOutline(item.copy(category = category))
+    }
 
     // ---------------- 大纲分类标签 ----------------
 
@@ -91,7 +98,7 @@ class BookDetailViewModel(
     fun deleteCategory(key: String) = viewModelScope.launch {
         val current = container.prefs.outlineCategories(bookId) ?: defaultOutlineKeys
         container.prefs.setOutlineCategories(bookId, current - key)
-        repo.deleteOutlineByCategory(bookId, key)
+        outlineRepository.deleteOutlineByCategory(bookId, key)
         refreshCategories()
     }
 
@@ -104,7 +111,7 @@ class BookDetailViewModel(
         // 字段模板跟随新分类名，避免重命名后新增条目回落到默认字段
         val fields = container.prefs.outlineFields(bookId, oldKey) ?: defaultOutlineFields(oldKey)
         container.prefs.setOutlineFields(bookId, name, fields)
-        repo.renameOutlineCategory(bookId, oldKey, name)
+        outlineRepository.renameOutlineCategory(bookId, oldKey, name)
         refreshCategories()
     }
 
@@ -112,11 +119,11 @@ class BookDetailViewModel(
     fun reorderVolumeIds(ids: List<Long>) = viewModelScope.launch {
         val byId = volumes.value.associateBy { it.id }
         val ordered = ids.mapNotNull { byId[it] }
-        if (ordered.size >= 2) repo.reorderVolumes(ordered)
+        if (ordered.size >= 2) bookRepository.reorderVolumes(ordered)
     }
 
     /** 排序：按传入的 id 顺序重排章节 */
     fun reorderChapterIds(ids: List<Long>) = viewModelScope.launch {
-        if (ids.size >= 2) repo.reorderChapters(ids)
+        if (ids.size >= 2) bookRepository.reorderChapters(ids)
     }
 }

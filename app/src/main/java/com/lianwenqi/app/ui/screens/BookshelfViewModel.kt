@@ -22,7 +22,7 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalCoroutinesApi::class)
 class BookshelfViewModel(private val container: AppContainer) : ViewModel() {
 
-    private val repo = container.repository
+    private val bookRepository = container.bookRepository
     private val prefs = container.prefs
 
     val nightMode: StateFlow<Boolean> =
@@ -38,11 +38,11 @@ class BookshelfViewModel(private val container: AppContainer) : ViewModel() {
         prefs.sortAsc.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     val groups: StateFlow<List<BookGroup>> =
-        repo.observeGroups().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        bookRepository.observeGroups().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val books: StateFlow<List<BookSummary>> =
         combine(prefs.sortMode, prefs.sortAsc) { mode, asc -> SortMode.valueOf(mode) to asc }
-            .flatMapLatest { (mode, asc) -> repo.observeBookSummaries(mode, asc) }
+            .flatMapLatest { (mode, asc) -> bookRepository.observeBookSummaries(mode, asc) }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     /** 当前筛选的分组 id，null 表示全部 */
@@ -86,35 +86,35 @@ class BookshelfViewModel(private val container: AppContainer) : ViewModel() {
         groupId: Long?,
         onCreated: (Long) -> Unit
     ) = viewModelScope.launch {
-        val id = repo.createBook(title, intro, coverPath, coverColor, volumePrefix, chapterPrefix, groupId)
+        val id = bookRepository.createBook(title, intro, coverPath, coverColor, volumePrefix, chapterPrefix, groupId)
         onCreated(id)
     }
 
     /** 保存书籍编辑结果 */
-    fun updateBook(book: Book) = viewModelScope.launch { repo.updateBook(book) }
+    fun updateBook(book: Book) = viewModelScope.launch { bookRepository.updateBook(book) }
 
-    fun togglePin(book: Book) = viewModelScope.launch { repo.setPinned(book.id, !book.pinned) }
+    fun togglePin(book: Book) = viewModelScope.launch { bookRepository.setPinned(book.id, !book.pinned) }
 
-    fun deleteBook(bookId: Long) = viewModelScope.launch { repo.deleteBook(bookId) }
+    fun deleteBook(bookId: Long) = viewModelScope.launch { bookRepository.deleteBook(bookId) }
 
     /** 批量删除所选书籍 */
-    fun deleteBooks(ids: Set<Long>) = viewModelScope.launch { ids.forEach { repo.deleteBook(it) } }
+    fun deleteBooks(ids: Set<Long>) = viewModelScope.launch { ids.forEach { bookRepository.deleteBook(it) } }
 
     fun moveToGroup(bookId: Long, groupId: Long?) = viewModelScope.launch {
-        repo.moveToGroup(bookId, groupId)
+        bookRepository.moveToGroup(bookId, groupId)
     }
 
     /** 批量把所选书籍纳入分组 */
     fun moveBooksToGroup(ids: Set<Long>, groupId: Long?) = viewModelScope.launch {
-        ids.forEach { repo.moveToGroup(it, groupId) }
+        ids.forEach { bookRepository.moveToGroup(it, groupId) }
     }
 
-    fun createGroup(name: String) = viewModelScope.launch { repo.createGroup(name) }
+    fun createGroup(name: String) = viewModelScope.launch { bookRepository.createGroup(name) }
 
     /** 新建分组并返回新分组 id（创建书籍表单内现场建组用） */
-    suspend fun createGroupAndGet(name: String): Long = repo.createGroup(name)
+    suspend fun createGroupAndGet(name: String): Long = bookRepository.createGroup(name)
 
-    suspend fun chaptersOf(bookId: Long): List<Chapter> = repo.getChapters(bookId)
+    suspend fun chaptersOf(bookId: Long): List<Chapter> = bookRepository.getChapters(bookId)
 
-    suspend fun volumesOf(bookId: Long) = repo.getVolumes(bookId)
+    suspend fun volumesOf(bookId: Long) = bookRepository.getVolumes(bookId)
 }

@@ -25,8 +25,8 @@ android {
         applicationId = "com.lianwenqi.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 22
-        versionName = "3.01"
+        versionCode = 23
+        versionName = "3.02"
 
         vectorDrawables { useSupportLibrary = true }
     }
@@ -109,4 +109,8 @@ dependencies {
     implementation("io.coil-kt:coil-compose:2.7.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
+
+    // JVM 单元测试（手写 fake，不用 Mockito/MockK）
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.0")
 }

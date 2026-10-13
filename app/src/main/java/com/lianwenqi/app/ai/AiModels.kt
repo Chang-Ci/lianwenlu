@@ -21,7 +21,8 @@ data class AiRequest(
 data class AiResult(
     val success: Boolean,
     val content: String = "",
-    val error: String? = null,
+    /** 失败原因（按类型区分）；成功时为 null */
+    val error: AiError? = null,
     /** 深度思考内容（reasoning_content / responses 的 reasoning 项），为空表示模型没有思考过程 */
     val reasoning: String = "",
     /** 本次消耗的输入 token（usage.prompt_tokens） */
@@ -46,7 +47,14 @@ data class AiResult(
             cachedTokens = cachedTokens
         )
 
-        fun fail(message: String) = AiResult(false, error = message)
+        fun fail(error: AiError) = AiResult(false, error = error)
+
+        /**
+         * 内容级失败（如「模型返回为空」「回复被截断」）：不属于网络/鉴权/超时等传输问题，
+         * 归入 [AiError.Unknown]，同时把原始提示文本保留在 userMessage 中。
+         */
+        fun fail(message: String) =
+            AiResult(false, error = AiError.Unknown(IllegalStateException(message)))
     }
 }
 

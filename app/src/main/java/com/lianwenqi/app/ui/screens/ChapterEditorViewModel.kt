@@ -29,29 +29,31 @@ class ChapterEditorViewModel(
     initialChapterId: Long
 ) : ViewModel() {
 
-    private val repo = container.repository
+    private val bookRepository = container.bookRepository
+    private val outlineRepository = container.outlineRepository
+    private val configRepository = container.configRepository
     private val prefs = container.prefs
 
     var currentChapterId: Long = initialChapterId
         private set
 
     val book: StateFlow<Book?> =
-        repo.observeBook(bookId).stateIn(viewModelScope, SharingStarted.Eagerly, null)
+        bookRepository.observeBook(bookId).stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     val chapters: StateFlow<List<Chapter>> =
-        repo.observeChapters(bookId)
+        bookRepository.observeChapters(bookId)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val volumes: StateFlow<List<Volume>> =
-        repo.observeVolumes(bookId)
+        bookRepository.observeVolumes(bookId)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val outline: StateFlow<List<OutlineItem>> =
-        repo.observeOutline(bookId)
+        outlineRepository.observeOutline(bookId)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val prompts: StateFlow<List<Prompt>> =
-        repo.observePrompts().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        configRepository.observePrompts().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val format: StateFlow<FormatSettings> =
         prefs.format.stateIn(viewModelScope, SharingStarted.Eagerly, FormatSettings())
@@ -68,10 +70,10 @@ class ChapterEditorViewModel(
         currentChapterId = id
     }
 
-    suspend fun loadChapter(id: Long = currentChapterId): Chapter? = repo.getChapter(id)
+    suspend fun loadChapter(id: Long = currentChapterId): Chapter? = bookRepository.getChapter(id)
 
     fun createChapter(volumeId: Long?, onCreated: (Long) -> Unit) = viewModelScope.launch {
-        val id = repo.createChapter(bookId, volumeId)
+        val id = bookRepository.createChapter(bookId, volumeId)
         currentChapterId = id
         onCreated(id)
     }
@@ -88,7 +90,7 @@ class ChapterEditorViewModel(
     fun saveNow(title: String, summary: String, content: String, cursor: Int) = viewModelScope.launch {
         saveJob?.cancel()
         commit(currentChapterId, title, summary, content, cursor)
-        repo.touchBook(bookId, currentChapterId, title)
+        bookRepository.touchBook(bookId, currentChapterId, title)
     }
 
     /**
@@ -99,12 +101,12 @@ class ChapterEditorViewModel(
     fun saveChapter(chapterId: Long, title: String, summary: String, content: String, cursor: Int) =
         viewModelScope.launch {
             saveJob?.cancel()
-            repo.saveChapterContent(chapterId, title, summary, content, cursor)
+            bookRepository.saveChapterContent(chapterId, title, summary, content, cursor)
         }
 
     private suspend fun commit(chapterId: Long, title: String, summary: String, content: String, cursor: Int) {
-        repo.saveChapterContent(chapterId, title, summary, content, cursor)
-        repo.touchBook(bookId, chapterId, title)
+        bookRepository.saveChapterContent(chapterId, title, summary, content, cursor)
+        bookRepository.touchBook(bookId, chapterId, title)
     }
 
     fun applyOneKeyFormat(text: String, settings: FormatSettings): String =
@@ -123,13 +125,13 @@ class ChapterEditorViewModel(
 
     fun setKeepScreenOn(v: Boolean) = viewModelScope.launch { prefs.setKeepScreenOn(v) }
 
-    suspend fun searchInBook(keyword: String): List<Chapter> = repo.searchInBook(bookId, keyword)
+    suspend fun searchInBook(keyword: String): List<Chapter> = bookRepository.searchInBook(bookId, keyword)
 
     suspend fun outlineByCategory(category: OutlineCategory): List<OutlineItem> =
-        repo.getOutline(bookId).filter { it.category == category.name }
+        outlineRepository.getOutline(bookId).filter { it.category == category.name }
 
     /** 抽屉里编辑大纲条目 */
-    fun saveOutline(item: OutlineItem) = viewModelScope.launch { repo.saveOutline(item) }
+    fun saveOutline(item: OutlineItem) = viewModelScope.launch { outlineRepository.saveOutline(item) }
 
     /** 大纲「表」模板：按书籍 + 分类存取字段名 */
     suspend fun outlineFields(category: String): List<String>? = prefs.outlineFields(bookId, category)
@@ -145,7 +147,7 @@ class ChapterEditorViewModel(
             onResult("请先在「设置」中配置并选择模型")
             return@launch
         }
-        val result = repo.sendToModel(
+        val result = configRepository.sendToModel(
             modelId,
             AiRequest(
                 turns = listOf(ChatTurn(ChatRole.USER, prompt)),
@@ -154,7 +156,7 @@ class ChapterEditorViewModel(
                 maxTokens = 0
             )
         )
-        onResult(if (result.success) result.content else "生成失败：${result.error}")
+        onResult(if (result.success) result.content else (result.error?.userMessage ?: "生成失败"))
     }
 
     fun wordCount(text: String): Int = TextTool.countWords(text)

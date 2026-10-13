@@ -15,6 +15,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okio.BufferedSource
+import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -41,8 +42,18 @@ class AiClient(
         }
     }
 
-    /** 读取供应商可用模型列表 */
-    suspend fun listModels(baseUrl: String, apiKey: String): List<String> =
+    /** HTTP 状态码 → 错误类型：401/403 归为鉴权失败，其余非 2xx 归为服务器错误 */
+    private fun errorForStatus(code: Int, body: String?): AiError = when (code) {
+        401, 403 -> AiError.Unauthorized()
+        else -> AiError.Server(code, body)
+    }
+
+    /**
+     * 读取供应商可用模型列表。
+     * 失败时返回 [Result.failure]（异常为 [AiException]，内含可区分类型的 [AiError]），
+     * 不再把不同性质的错误压成一句「读取模型失败：xxx」。
+     */
+    suspend fun listModels(baseUrl: String, apiKey: String): Result<List<String>> =
         withContext(Dispatchers.IO) {
             val base = baseUrl.trim().trimEnd('/')
             val url = if (base.endsWith("/models")) base else "$base/models"
@@ -51,13 +62,19 @@ class AiClient(
                 .header("Authorization", "Bearer $apiKey")
                 .get()
                 .build()
-            runCatching {
+            try {
                 client.newCall(request).execute().use { resp ->
                     val body = resp.body?.string().orEmpty()
-                    if (!resp.isSuccessful) error("HTTP ${resp.code}: ${body.take(200)}")
-                    json.decodeFromString<ModelListResponse>(body).data.map { it.id }
+                    if (!resp.isSuccessful) {
+                        return@withContext Result.failure(AiException(errorForStatus(resp.code, body.take(200))))
+                    }
+                    Result.success(json.decodeFromString<ModelListResponse>(body).data.map { it.id })
                 }
-            }.getOrElse { throw IllegalStateException("读取模型失败：${it.message}") }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                Result.failure(AiException(AiError.fromThrowable(e)))
+            }
         }
 
     /**
@@ -89,7 +106,8 @@ class AiClient(
             }.getOrElse {
                 // 用户主动「停止响应」时协程被取消，需要原样抛出，不能当成请求失败
                 if (it is CancellationException) throw it
-                AiResult.fail(it.message ?: "请求失败")
+                // 按异常类型映射到具体 AiError（超时 / 网络 / 解析 / 未知），不再压成一句字符串
+                AiResult.fail(AiError.fromThrowable(it))
             }
         }
 
@@ -143,7 +161,7 @@ class AiClient(
             .build()
         execute(request).use { resp ->
             val text = resp.body?.string().orEmpty()
-            if (!resp.isSuccessful) return AiResult.fail("HTTP ${resp.code}: ${text.take(300)}")
+            if (!resp.isSuccessful) return AiResult.fail(errorForStatus(resp.code, text.take(300)))
             val parsed = json.decodeFromString<ChatCompletionResponse>(text)
             parsed.error?.message?.let { return AiResult.fail(it) }
             val choice = parsed.choices.firstOrNull()
@@ -185,7 +203,7 @@ class AiClient(
             .build()
         execute(request).use { resp ->
             if (!resp.isSuccessful) {
-                return AiResult.fail("HTTP ${resp.code}: ${resp.body?.string().orEmpty().take(300)}")
+                return AiResult.fail(errorForStatus(resp.code, resp.body?.string().orEmpty().take(300)))
             }
             val source = resp.body?.source() ?: return AiResult.fail("模型返回为空")
             val content = StringBuilder()
@@ -193,18 +211,29 @@ class AiClient(
             var usage: Usage? = null
             var truncated = false
             var errorMessage: String? = null
+            // 是否收到协议结束标志（[DONE] 或 finish_reason）。未收到就 EOF，视为中途断流
+            var terminated = false
+            var streamEnded = false
             while (true) {
                 currentCoroutineContext().ensureActive()
-                val line = readLineOrNull(source) ?: break
+                val line = readLineOrNull(source)
+                if (line == null) {
+                    streamEnded = true
+                    break
+                }
                 if (line.isBlank() || !line.startsWith("data:")) continue
                 val data = line.removePrefix("data:").trim()
-                if (data == "[DONE]") break
+                if (data == "[DONE]") {
+                    terminated = true
+                    break
+                }
                 val chunk = runCatching {
                     json.decodeFromString(ChatCompletionChunk.serializer(), data)
                 }.getOrNull() ?: continue
                 chunk.error?.message?.let { errorMessage = it }
                 chunk.usage?.let { usage = it }
                 val choice = chunk.choices.firstOrNull()
+                if (choice?.finishReason != null) terminated = true
                 if (choice?.finishReason == "length") truncated = true
                 val delta = choice?.delta
                 val dc = delta?.content
@@ -219,6 +248,10 @@ class AiClient(
                 }
             }
             errorMessage?.let { return AiResult.fail(it) }
+            // 中途断流：连接关闭但没收到结束标志 → 明确报错，不静默当成成功
+            if (streamEnded && !terminated) {
+                return AiResult.fail(AiError.Network(IOException("响应中断：连接在完整结束前被关闭")))
+            }
             val text = content.toString()
             if (text.isBlank()) {
                 return if (truncated) AiResult.fail(TRUNCATED_HINT) else AiResult.fail("模型返回为空")
@@ -252,7 +285,7 @@ class AiClient(
             .build()
         execute(request).use { resp ->
             val text = resp.body?.string().orEmpty()
-            if (!resp.isSuccessful) return AiResult.fail("HTTP ${resp.code}: ${text.take(300)}")
+            if (!resp.isSuccessful) return AiResult.fail(errorForStatus(resp.code, text.take(300)))
             val parsed = json.decodeFromString<ResponsesResponse>(text)
             parsed.error?.message?.let { return AiResult.fail(it) }
             val content = extractResponsesText(parsed)
@@ -293,19 +326,29 @@ class AiClient(
             .build()
         execute(request).use { resp ->
             if (!resp.isSuccessful) {
-                return AiResult.fail("HTTP ${resp.code}: ${resp.body?.string().orEmpty().take(300)}")
+                return AiResult.fail(errorForStatus(resp.code, resp.body?.string().orEmpty().take(300)))
             }
             val source = resp.body?.source() ?: return AiResult.fail("模型返回为空")
             val content = StringBuilder()
             val reasoning = StringBuilder()
             var usage: ResponsesUsage? = null
             var errorMessage: String? = null
+            // 结束标志：response.completed（或 [DONE]）。未收到就 EOF，视为中途断流
+            var terminated = false
+            var streamEnded = false
             while (true) {
                 currentCoroutineContext().ensureActive()
-                val line = readLineOrNull(source) ?: break
+                val line = readLineOrNull(source)
+                if (line == null) {
+                    streamEnded = true
+                    break
+                }
                 if (line.isBlank() || !line.startsWith("data:")) continue
                 val data = line.removePrefix("data:").trim()
-                if (data == "[DONE]") break
+                if (data == "[DONE]") {
+                    terminated = true
+                    break
+                }
                 val event = runCatching {
                     json.decodeFromString(ResponsesStreamEvent.serializer(), data)
                 }.getOrNull() ?: continue
@@ -319,10 +362,17 @@ class AiClient(
                         reasoning.append(event.delta)
                         onDelta("", event.delta)
                     }
-                    event.type == "response.completed" -> event.response?.usage?.let { usage = it }
+                    event.type == "response.completed" -> {
+                        terminated = true
+                        event.response?.usage?.let { usage = it }
+                    }
                 }
             }
             errorMessage?.let { return AiResult.fail(it) }
+            // 中途断流：连接关闭但没收到 response.completed → 明确报错
+            if (streamEnded && !terminated) {
+                return AiResult.fail(AiError.Network(IOException("响应中断：连接在完整结束前被关闭")))
+            }
             val text = content.toString()
             if (text.isBlank()) {
                 return AiResult.fail("模型返回为空")
@@ -419,7 +469,7 @@ class AiClient(
         val payload = buildAnthropicRequest(endpoint, turns, stream = false)
         execute(anthropicRequest(endpoint, payload)).use { resp ->
             val text = resp.body?.string().orEmpty()
-            if (!resp.isSuccessful) return AiResult.fail("HTTP ${resp.code}: ${text.take(300)}")
+            if (!resp.isSuccessful) return AiResult.fail(errorForStatus(resp.code, text.take(300)))
             val parsed = json.decodeFromString<AnthropicResponse>(text)
             parsed.error?.message?.let { return AiResult.fail(it) }
             val content = parsed.content.filter { it.type == "text" }.mapNotNull { it.text }.joinToString("")
@@ -448,7 +498,7 @@ class AiClient(
         val payload = buildAnthropicRequest(endpoint, turns, stream = true)
         execute(anthropicRequest(endpoint, payload)).use { resp ->
             if (!resp.isSuccessful) {
-                return AiResult.fail("HTTP ${resp.code}: ${resp.body?.string().orEmpty().take(300)}")
+                return AiResult.fail(errorForStatus(resp.code, resp.body?.string().orEmpty().take(300)))
             }
             val source = resp.body?.source() ?: return AiResult.fail("模型返回为空")
             val content = StringBuilder()
@@ -459,9 +509,16 @@ class AiClient(
             var cacheCreation = 0
             var truncated = false
             var errorMessage: String? = null
+            // 结束标志：message_stop。未收到就 EOF，视为中途断流
+            var terminated = false
+            var streamEnded = false
             while (true) {
                 currentCoroutineContext().ensureActive()
-                val line = readLineOrNull(source) ?: break
+                val line = readLineOrNull(source)
+                if (line == null) {
+                    streamEnded = true
+                    break
+                }
                 if (line.isBlank() || !line.startsWith("data:")) continue
                 val data = line.removePrefix("data:").trim()
                 val event = runCatching {
@@ -478,6 +535,7 @@ class AiClient(
                         event.usage?.let { outputTokens = it.outputTokens }
                         if (event.delta?.stopReason == "max_tokens") truncated = true
                     }
+                    "message_stop" -> terminated = true
                     "content_block_delta" -> {
                         val t = event.delta?.text
                         val k = event.delta?.thinking
@@ -493,6 +551,10 @@ class AiClient(
                 }
             }
             errorMessage?.let { return AiResult.fail(it) }
+            // 中途断流：连接关闭但没收到 message_stop → 明确报错
+            if (streamEnded && !terminated) {
+                return AiResult.fail(AiError.Network(IOException("响应中断：连接在完整结束前被关闭")))
+            }
             val text = content.toString()
             if (text.isBlank()) {
                 return if (truncated) AiResult.fail(TRUNCATED_HINT) else AiResult.fail("模型返回为空")

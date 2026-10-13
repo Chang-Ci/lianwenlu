@@ -1,5 +1,7 @@
 package com.lianwenqi.app.ui.screens
 
+import android.widget.Toast
+
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -52,6 +54,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -59,6 +62,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
@@ -66,6 +70,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.lianwenqi.app.AppContainer
+import com.lianwenqi.app.ai.AiException
 import com.lianwenqi.app.data.entity.AiModel
 import com.lianwenqi.app.data.entity.ApiType
 import com.lianwenqi.app.data.entity.Prompt
@@ -77,15 +82,15 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 class SettingsViewModel(private val container: AppContainer) : ViewModel() {
-    private val repo = container.repository
+    private val configRepository = container.configRepository
     private val prefs = container.prefs
 
     val providers: StateFlow<List<Provider>> =
-        repo.observeProviders().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        configRepository.observeProviders().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val models: StateFlow<List<AiModel>> =
-        repo.observeModels().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        configRepository.observeModels().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val prompts: StateFlow<List<Prompt>> =
-        repo.observePrompts().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        configRepository.observePrompts().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val nightMode: StateFlow<Boolean> =
         prefs.nightMode.stateIn(viewModelScope, SharingStarted.Eagerly, false)
     val activeModelId: StateFlow<Long> =
@@ -95,22 +100,23 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
     val aiOutlineFirstRound: StateFlow<Boolean> =
         prefs.aiOutlineFirstRound.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
-    fun saveProvider(provider: Provider) = viewModelScope.launch { repo.saveProvider(provider) }
-    fun deleteProvider(id: Long) = viewModelScope.launch { repo.deleteProvider(id) }
+    fun saveProvider(provider: Provider) = viewModelScope.launch { configRepository.saveProvider(provider) }
+    fun deleteProvider(id: Long) = viewModelScope.launch { configRepository.deleteProvider(id) }
 
     fun fetchModels(provider: Provider, onResult: (List<String>, String?) -> Unit) =
         viewModelScope.launch {
-            runCatching { repo.fetchRemoteModels(provider) }
+            configRepository.fetchRemoteModels(provider)
                 .onSuccess { onResult(it, null) }
-                .onFailure { onResult(emptyList(), it.message) }
+                // 失败时展示按类型区分后的提示（鉴权 / 超时 / 服务器错误…），不再是统一的「读取模型失败」
+                .onFailure { onResult(emptyList(), (it as? AiException)?.error?.userMessage ?: it.message) }
         }
 
-    fun saveModel(model: AiModel) = viewModelScope.launch { repo.saveModel(model) }
-    fun deleteModel(id: Long) = viewModelScope.launch { repo.deleteModel(id) }
+    fun saveModel(model: AiModel) = viewModelScope.launch { configRepository.saveModel(model) }
+    fun deleteModel(id: Long) = viewModelScope.launch { configRepository.deleteModel(id) }
     fun setActiveModel(id: Long) = viewModelScope.launch { prefs.setActiveModelId(id) }
 
-    fun savePrompt(prompt: Prompt) = viewModelScope.launch { repo.savePrompt(prompt) }
-    fun deletePrompt(id: Long) = viewModelScope.launch { repo.deletePrompt(id) }
+    fun savePrompt(prompt: Prompt) = viewModelScope.launch { configRepository.savePrompt(prompt) }
+    fun deletePrompt(id: Long) = viewModelScope.launch { configRepository.deletePrompt(id) }
 
     fun setNight(v: Boolean) = viewModelScope.launch { prefs.setNightMode(v) }
     fun setAiFollowBook(v: Boolean) = viewModelScope.launch { prefs.setAiFollowBook(v) }
@@ -301,6 +307,12 @@ private fun ProvidersTab(
     onSetActive: (AiModel) -> Unit,
     onFetchModels: (Provider, (List<String>, String?) -> Unit) -> Unit
 ) {
+    val context = LocalContext.current
+    // 「测试读取模型」正在测试的供应商 id，与测试结果文案（key = provider id）
+    var testingId by remember { mutableStateOf<Long?>(null) }
+    val testResults = remember { mutableStateMapOf<Long, String>() }
+    val testOk = remember { mutableStateMapOf<Long, Boolean>() }
+
     LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp)) {
         item {
             Button(onClick = onAddProvider) {
@@ -376,9 +388,34 @@ private fun ProvidersTab(
                     Row {
                         OutlinedButton(onClick = { onAddModel(p) }) { Text("添加模型") }
                         Spacer(Modifier.width(8.dp))
-                        OutlinedButton(onClick = { onFetchModels(p) { _, _ -> } }) {
-                            Text("测试读取模型")
-                        }
+                        OutlinedButton(
+                            enabled = testingId != p.id,
+                            onClick = {
+                                // 真实请求一次模型列表：能连上并解析成功即视为连通
+                                testingId = p.id
+                                testResults.remove(p.id)
+                                onFetchModels(p) { list, err ->
+                                    testingId = null
+                                    val ok = err == null
+                                    testOk[p.id] = ok
+                                    testResults[p.id] = when {
+                                        err != null -> "连接失败：$err"
+                                        list.isEmpty() -> "连接成功，但未读取到模型（请检查 apiKey / baseUrl）"
+                                        else -> "连接成功，读取到 ${list.size} 个模型"
+                                    }
+                                    Toast.makeText(context, testResults[p.id], Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        ) { Text(if (testingId == p.id) "测试中…" else "测试读取模型") }
+                    }
+                    testResults[p.id]?.let { msg ->
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            msg,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (testOk[p.id] == true) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.error
+                        )
                     }
                 }
             }

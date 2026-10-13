@@ -3,10 +3,11 @@ package com.lianwenqi.app.ui.screens
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.lianwenqi.app.AppContainer
-import com.lianwenqi.app.ai.AiRequest
-import com.lianwenqi.app.ai.ChatTurn
 import com.lianwenqi.app.data.AiChapterImporter
 import com.lianwenqi.app.data.AiOutlineImporter
+import com.lianwenqi.app.data.ChatEvent
+import com.lianwenqi.app.data.SendChatMessageUseCase
+import com.lianwenqi.app.data.SendChatRequest
 import com.lianwenqi.app.data.entity.AiModel
 import com.lianwenqi.app.data.entity.Book
 import com.lianwenqi.app.data.entity.BookGroup
@@ -21,14 +22,10 @@ import com.lianwenqi.app.data.entity.outlineCategoryLabel
 import com.lianwenqi.app.data.entity.Prompt
 import com.lianwenqi.app.data.entity.Provider
 import com.lianwenqi.app.data.entity.Volume
-import com.lianwenqi.app.util.AI_CHAPTER_TOOL_PROMPT
-import com.lianwenqi.app.util.AI_OUTLINE_TOOL_PROMPT
 import com.lianwenqi.app.util.AI_TOOL_IMPORT_CHAPTER
 import com.lianwenqi.app.util.AI_TOOL_WRITE_OUTLINE
 import com.lianwenqi.app.util.AiChapterBlock
 import com.lianwenqi.app.util.AiOutlineBlock
-import com.lianwenqi.app.util.parseAiChapterBlocks
-import com.lianwenqi.app.util.parseAiOutlineBlocks
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -52,34 +49,40 @@ class AiChatViewModel(
     private val fixedChapterId: Long? = null
 ) : ViewModel() {
 
-    private val repo = container.repository
+    private val bookRepository = container.bookRepository
+    private val chatRepository = container.chatRepository
+    private val outlineRepository = container.outlineRepository
+    private val configRepository = container.configRepository
     private val prefs = container.prefs
 
+    /** 「发送消息」用例：组装上下文 → 流式请求 → 写回助手消息 → 解析工具区块 */
+    private val sendChatMessage = SendChatMessageUseCase(chatRepository, configRepository)
+
     val prompts: StateFlow<List<Prompt>> =
-        repo.observePrompts().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        configRepository.observePrompts().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val models: StateFlow<List<AiModel>> =
-        repo.observeModels().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        configRepository.observeModels().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val providers: StateFlow<List<Provider>> =
-        repo.observeProviders().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        configRepository.observeProviders().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val books: StateFlow<List<Book>> =
-        repo.observeBooks(com.lianwenqi.app.data.SortMode.TIME, false)
+        bookRepository.observeBooks(com.lianwenqi.app.data.SortMode.TIME, false)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     /** 书籍分组（选书弹窗的分组筛选用） */
     val groups: StateFlow<List<BookGroup>> =
-        repo.observeGroups().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        bookRepository.observeGroups().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val sessions: StateFlow<List<ChatSession>> =
-        repo.observeSessions().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        chatRepository.observeSessions().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     private val _sessionId = MutableStateFlow<Long?>(null)
     val sessionId: StateFlow<Long?> = _sessionId.asStateFlow()
 
     val messages: StateFlow<List<ChatMessage>> = _sessionId
-        .flatMapLatest { id -> if (id == null) flowOf(emptyList()) else repo.observeMessages(id) }
+        .flatMapLatest { id -> if (id == null) flowOf(emptyList()) else chatRepository.observeMessages(id) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val activeModelId: StateFlow<Long> = prefs.activeModelId
@@ -120,8 +123,8 @@ class AiChatViewModel(
 
     // ---------------- AI 工具 ----------------
 
-    private val outlineImporter = AiOutlineImporter(prefs, repo)
-    private val chapterImporter = AiChapterImporter(repo)
+    private val outlineImporter = AiOutlineImporter(prefs, outlineRepository)
+    private val chapterImporter = AiChapterImporter(bookRepository)
 
     /** 「写入大纲工具」是否启用（设置-AI工具页控制；关闭后不在聊天页多选中出现） */
     val outlineToolEnabled: StateFlow<Boolean> = prefs.aiToolOutlineEnabled
@@ -169,7 +172,7 @@ class AiChatViewModel(
     /** 导入的默认目标书籍：唯一勾选的书 > 会话绑定的书 */
     suspend fun importTargetBookId(): Long? =
         selectedBookIds.value.singleOrNull()
-            ?: _sessionId.value?.let { repo.getSession(it)?.bookId }
+            ?: _sessionId.value?.let { chatRepository.getSession(it)?.bookId }
 
     /** 把待导入的大纲区块写入指定书籍，然后继续队列中的下一项 */
     fun confirmOutlineImport(bookId: Long) = viewModelScope.launch {
@@ -246,9 +249,9 @@ class AiChatViewModel(
             _outline.value = emptyList()
             _volumes.value = emptyList()
         } else {
-            _chapters.value = ids.flatMap { repo.getChapters(it) }
-            _outline.value = ids.flatMap { repo.getOutline(it) }
-            _volumes.value = ids.flatMap { repo.getVolumes(it) }
+            _chapters.value = ids.flatMap { bookRepository.getChapters(it) }
+            _outline.value = ids.flatMap { outlineRepository.getOutline(it) }
+            _volumes.value = ids.flatMap { bookRepository.getVolumes(it) }
         }
     }
 
@@ -259,8 +262,8 @@ class AiChatViewModel(
                 _filterVolumes.value = emptyList()
                 _filterChapters.value = emptyList()
             } else {
-                _filterVolumes.value = repo.getVolumes(bookId)
-                _filterChapters.value = repo.getChapters(bookId)
+                _filterVolumes.value = bookRepository.getVolumes(bookId)
+                _filterChapters.value = bookRepository.getChapters(bookId)
             }
         }
     }
@@ -279,7 +282,7 @@ class AiChatViewModel(
             if (prefs.aiFollowBook.first()) {
                 val bookId = memoryBookId()
                 if (bookId != null) {
-                    val existing = repo.getBookSession(bookId)
+                    val existing = chatRepository.getBookSession(bookId)
                     if (existing != null) {
                         _sessionId.value = existing.id
                         restoreContextMemory()
@@ -290,7 +293,7 @@ class AiChatViewModel(
                     return
                 }
             } else {
-                repo.getSessionByChapter(chapterId)?.let { _sessionId.value = it.id }
+                chatRepository.getSessionByChapter(chapterId)?.let { _sessionId.value = it.id }
             }
         }
         restoreContextMemory()
@@ -356,7 +359,7 @@ class AiChatViewModel(
     }
 
     /** 快速新建书籍（默认前缀），返回新书 id */
-    suspend fun createBook(title: String): Long = repo.createBook(
+    suspend fun createBook(title: String): Long = bookRepository.createBook(
         title = title.trim(),
         intro = "",
         coverPath = null,
@@ -374,7 +377,7 @@ class AiChatViewModel(
         volumePrefix: String,
         chapterPrefix: String,
         groupId: Long?
-    ): Long = repo.createBook(title, intro, coverPath, coverColor, volumePrefix, chapterPrefix, groupId)
+    ): Long = bookRepository.createBook(title, intro, coverPath, coverColor, volumePrefix, chapterPrefix, groupId)
 
     /** 复制封面图到应用私有目录，返回本地路径 */
     suspend fun pickCover(uri: android.net.Uri): String? =
@@ -383,7 +386,7 @@ class AiChatViewModel(
         }
 
     /** 新建分组并返回新分组 id（书籍表单内现场建组用） */
-    suspend fun createGroupAndGet(name: String): Long = repo.createGroup(name)
+    suspend fun createGroupAndGet(name: String): Long = bookRepository.createGroup(name)
 
     /** 快速新建书籍并选为当前上下文书籍 */
     fun createBookAndSelect(title: String) = viewModelScope.launch {
@@ -485,7 +488,7 @@ class AiChatViewModel(
                     applyNewBookSessionDefaults(bookId)
                 }
                 else -> {
-                    _sessionId.value = repo.createSession("新对话", bookId, modelId, null)
+                    _sessionId.value = chatRepository.createSession("新对话", bookId, modelId, null)
                 }
             }
             editingUserMessageId.value = 0L
@@ -503,16 +506,16 @@ class AiChatViewModel(
             chapterId != null && bookId != null ->
                 createBookSession(bookId, modelId)
             else ->
-                repo.createSession("新对话", bookId, modelId, null)
+                chatRepository.createSession("新对话", bookId, modelId, null)
         }
     }
 
     /** 新建绑定本书的会话，并按「书名（现）/（1）/（2）…」重排该书会话标题 */
     private suspend fun createBookSession(bookId: Long, modelId: Long?): Long {
-        val id = repo.createSession("新对话", bookId, modelId, null)
-        val bookTitle = repo.getBook(bookId)?.title.orEmpty().ifBlank { "本书" }
-        repo.updateSessions(
-            repo.bookSessions(bookId).mapIndexed { index, s ->
+        val id = chatRepository.createSession("新对话", bookId, modelId, null)
+        val bookTitle = bookRepository.getBook(bookId)?.title.orEmpty().ifBlank { "本书" }
+        chatRepository.updateSessions(
+            chatRepository.bookSessions(bookId).mapIndexed { index, s ->
                 s.copy(title = if (index == 0) "$bookTitle（现）" else "$bookTitle（$index）")
             }
         )
@@ -537,17 +540,17 @@ class AiChatViewModel(
 
     /** 跟章节模式：同一章节只保留最新一次对话，会话标题为「书名-卷名-章节名」 */
     private suspend fun createChapterSession(chapterId: Long, bookId: Long?, modelId: Long?): Long {
-        val id = repo.createSession(chapterSessionTitle(chapterId), bookId, modelId, chapterId)
-        repo.sessionsByChapter(chapterId).filter { it.id != id }.forEach { repo.deleteSession(it.id) }
+        val id = chatRepository.createSession(chapterSessionTitle(chapterId), bookId, modelId, chapterId)
+        chatRepository.sessionsByChapter(chapterId).filter { it.id != id }.forEach { chatRepository.deleteSession(it.id) }
         return id
     }
 
     /** 跟章节模式的会话标题：书名-卷名-章节名 */
     private suspend fun chapterSessionTitle(chapterId: Long): String {
-        val chapter = repo.getChapter(chapterId) ?: return "新对话"
-        val bookTitle = repo.getBook(chapter.bookId)?.title.orEmpty()
+        val chapter = bookRepository.getChapter(chapterId) ?: return "新对话"
+        val bookTitle = bookRepository.getBook(chapter.bookId)?.title.orEmpty()
         val volumeTitle = chapter.volumeId?.let { vid ->
-            repo.getVolumes(chapter.bookId).firstOrNull { it.id == vid }?.title.orEmpty()
+            bookRepository.getVolumes(chapter.bookId).firstOrNull { it.id == vid }?.title.orEmpty()
         }.orEmpty()
         return listOf(bookTitle, volumeTitle, chapter.title)
             .filter { it.isNotBlank() }
@@ -558,19 +561,19 @@ class AiChatViewModel(
     fun openSession(id: Long) {
         _sessionId.value = id
         viewModelScope.launch {
-            repo.getSession(id)?.bookId?.let { loadBookContext(it) }
+            chatRepository.getSession(id)?.bookId?.let { loadBookContext(it) }
         }
     }
 
     fun deleteSession(id: Long) = viewModelScope.launch {
-        repo.deleteSession(id)
+        chatRepository.deleteSession(id)
         if (_sessionId.value == id) _sessionId.value = null
     }
 
     /** 修改会话标题（长按会话触发） */
     fun renameSession(id: Long, title: String) = viewModelScope.launch {
         val t = title.trim()
-        if (t.isNotEmpty()) repo.updateSessionTitle(id, t)
+        if (t.isNotEmpty()) chatRepository.updateSessionTitle(id, t)
     }
 
     /** 启动一次生成任务并记录 Job，便于「停止响应」随时取消 */
@@ -608,33 +611,33 @@ class AiChatViewModel(
         val editingId = editingUserMessageId.value
         if (editingId > 0L) {
             editingUserMessageId.value = 0L
-            val target = repo.getMessage(editingId)
+            val target = chatRepository.getMessage(editingId)
             if (target != null && target.sessionId == sid) {
-                val next = repo.nextVariantIndex(editingId)
-                val staleIds = repo.getMessages(sid)
+                val next = chatRepository.nextVariantIndex(editingId)
+                val staleIds = chatRepository.getMessages(sid)
                     .filter {
                         it.id > editingId &&
                             !(it.role == ChatRole.ASSISTANT && it.replyToId == editingId)
                     }
                     .map { it.id }
-                repo.updateMessageContent(editingId, text)
+                chatRepository.updateMessageContent(editingId, text)
                 if (overrideText == null) input.value = ""
-                val ok = generate(
+                val ok = runGeneration(
                     sid, modelId, systemPrompt,
                     replyToUserId = editingId, historyEndId = editingId, variantIndex = next
                 )
-                if (ok) repo.deleteMessagesByIds(staleIds)
+                if (ok) chatRepository.deleteMessagesByIds(staleIds)
                 return@launchGenerating
             }
         }
 
         // 「首轮全选大纲」：本次是会话第一条用户消息时，先把大纲写进快照，随后清空勾选。
         // 后续轮次 UI 默认不勾选大纲，靠前缀复用保持稳定；用户重新勾选才改写前缀。
-        val isFirstUserMessage = repo.getMessages(sid).none { it.role == ChatRole.USER }
+        val isFirstUserMessage = chatRepository.getMessages(sid).none { it.role == ChatRole.USER }
         // 「＋本章梗概」：章节名与梗概作为附加提示词随消息落库（气泡里不显示），
         // 成为历史对话的一部分（不进最前面的参考资料前缀块）。
         // 下一轮从数据库重建历史时与上一轮实际发送的内容逐字节一致 → 前缀不被改写 → 缓存命中稳定。
-        val userId = repo.addMessage(
+        val userId = chatRepository.addMessage(
             sid, ChatRole.USER, text,
             contextSnapshot = currentSnapshot().encode(),
             promptExtra = chapterBlockSuffix()
@@ -647,7 +650,7 @@ class AiChatViewModel(
             selectedChapterIds.value = emptySet()
             chapterAllSelected.value = false
         }
-        generate(sid, modelId, systemPrompt, replyToUserId = userId, historyEndId = userId, variantIndex = 0)
+        runGeneration(sid, modelId, systemPrompt, replyToUserId = userId, historyEndId = userId, variantIndex = 0)
     }
 
     /** 当前勾选的上下文（书籍/章节/大纲 + 是否含梗概/正文） */
@@ -705,13 +708,13 @@ class AiChatViewModel(
             return@launchGenerating
         }
         val target = userMessageId.takeIf { it > 0 } ?: return@launchGenerating
-        val next = repo.nextVariantIndex(target)
-        generate(sid, modelId, "", replyToUserId = target, historyEndId = target, variantIndex = next)
+        val next = chatRepository.nextVariantIndex(target)
+        runGeneration(sid, modelId, "", replyToUserId = target, historyEndId = target, variantIndex = next)
     }
 
     /** 保存对话中某条消息的编辑结果 */
     fun updateMessage(id: Long, content: String) = viewModelScope.launch {
-        repo.updateMessageContent(id, content)
+        chatRepository.updateMessageContent(id, content)
     }
 
     /** 保存编辑后的回答，并让 AI 基于修改后的内容继续 */
@@ -723,9 +726,9 @@ class AiChatViewModel(
                 errorMessage.value = "请先在设置中配置并选择一个模型"
                 return@launchGenerating
             }
-            repo.updateMessageContent(assistantMessageId, content)
-            val next = repo.nextVariantIndex(userMessageId)
-            generate(
+            chatRepository.updateMessageContent(assistantMessageId, content)
+            val next = chatRepository.nextVariantIndex(userMessageId)
+            runGeneration(
                 sid, modelId, "",
                 replyToUserId = userMessageId,
                 historyEndId = assistantMessageId,
@@ -735,21 +738,21 @@ class AiChatViewModel(
 
     /** 切换到某个回答版本 */
     fun switchVariant(userMessageId: Long, messageId: Long) = viewModelScope.launch {
-        repo.setActiveVariant(userMessageId, messageId)
+        chatRepository.setActiveVariant(userMessageId, messageId)
     }
 
-    fun deleteMessage(id: Long) = viewModelScope.launch { repo.deleteMessage(id) }
+    fun deleteMessage(id: Long) = viewModelScope.launch { chatRepository.deleteMessage(id) }
 
     /** 收起 / 展开某条回答的正文，状态落库，再次进入会话时保持 */
     fun setContentCollapsed(messageId: Long, collapsed: Boolean) = viewModelScope.launch {
-        repo.setContentCollapsed(messageId, collapsed)
+        chatRepository.setContentCollapsed(messageId, collapsed)
     }
 
     /** 当前上下文（所勾选书籍/章节/大纲）拼装出的文本，用于「文件清单」预览 */
     suspend fun contextPreview(): String = previewFor(currentSnapshot())
 
     /** 某个上下文快照拼装出的文本，用于已发送消息上的「文件清单」预览 */
-    suspend fun previewFor(snapshot: ContextSnapshot): String = repo.buildContext(
+    suspend fun previewFor(snapshot: ContextSnapshot): String = chatRepository.buildContext(
         bookIds = snapshot.bookIds,
         chapterIds = snapshot.chapterIds,
         outlineIds = snapshot.outlineIds,
@@ -766,7 +769,12 @@ class AiChatViewModel(
         refreshChapterAllFlag()
     }
 
-    private suspend fun generate(
+    /**
+     * 运行一次生成：把输入打包成 [SendChatRequest] 交给 [SendChatMessageUseCase]，
+     * 只负责把流式事件映射到 UI 状态（正文 / 思考增量、工具区块入队、错误）。
+     * 返回是否生成成功（供「编辑后发送」决定是否丢弃旧回答）。
+     */
+    private suspend fun runGeneration(
         sid: Long,
         modelId: Long,
         systemPrompt: String,
@@ -774,113 +782,51 @@ class AiChatViewModel(
         historyEndId: Long,
         variantIndex: Int
     ): Boolean {
-        if (sending.value) return false
         val myJob = currentCoroutineContext()[Job]
         sending.value = true
         pendingReplyToId.value = replyToUserId
         streamingContent.value = ""
         streamingReasoning.value = ""
         errorMessage.value = null
+        var ok = false
+        val contentBuf = StringBuilder()
+        val reasoningBuf = StringBuilder()
         try {
-            val allMessages = repo.getMessages(sid)
-            // 「首轮全选」：当前没有手动勾选时，复用会话首条用户消息的上下文选择，
-            // 使最前面的「参考资料」前缀跨轮逐字节一致（大纲与全选章节已写进首轮前缀，不再改写）。
-            // 用户一旦重新勾选（集合非空 / 重新全选），则改用当前选择，即「改写前缀」。
-            val firstRound = firstRoundPrefixEnabled()
-            val firstSnap = if (firstRound) {
-                allMessages.firstOrNull { it.role == ChatRole.USER && it.id <= historyEndId }
-                    ?.let { decodeContextSnapshot(it.contextSnapshot) }
-            } else null
-            val outlineIds = if (firstRound && selectedOutlineIds.value.isEmpty()) {
-                firstSnap?.outlineIds.orEmpty()
-            } else {
-                selectedOutlineIds.value.toList()
-            }
-            // 首轮为「全选章节」且当前已取消勾选时，冻结复用首轮章节（仅梗概/仅正文同首轮），
-            // 保证「参考资料」前缀跨轮不变；用户重新勾选章节则恢复实时选择。
-            val frozenChapters = firstSnap?.chapterAll == true &&
-                selectedChapterIds.value.isEmpty() && !chapterAllSelected.value
-            val context = repo.buildContext(
-                bookIds = selectedBookIds.value.toList(),
-                chapterIds = if (frozenChapters) firstSnap?.chapterIds.orEmpty() else selectedChapterIds.value.toList(),
-                outlineIds = outlineIds,
-                includeContent = if (frozenChapters) firstSnap?.includeContent ?: false else includeContent.value,
-                includeSummary = if (frozenChapters) firstSnap?.includeSummary ?: true else includeSummary.value
+            val request = SendChatRequest(
+                sessionId = sid,
+                modelId = modelId,
+                systemPrompt = systemPrompt,
+                selection = currentSnapshot(),
+                replyToUserId = replyToUserId,
+                historyEndId = historyEndId,
+                variantIndex = variantIndex,
+                writeOutlineTool = writeOutlineToolOn(),
+                chapterImportTool = chapterImportToolOn(),
+                firstRoundPrefix = firstRoundPrefixEnabled()
             )
-            // 只取该用户消息之前的上下文，避免把同组的其他回答版本带进历史。
-            // 0 表示不限：携带全部历史，长对话下前缀更稳定、缓存命中率更高
-            val maxContext = repo.getModel(modelId)?.maxContext ?: 20
-            val history = allMessages
-                .filter { it.id <= historyEndId }
-                .filter { it.role == ChatRole.USER || it.role == ChatRole.ASSISTANT }
-                .let { if (maxContext > 0) it.takeLast(maxContext) else it }
-                // 拼回这条消息隐藏的附加提示词（如「＋本章梗概」），保证与当初发送的字节一致
-                .map {
-                    val extra = it.promptExtra
-                    ChatTurn(it.role, if (extra.isBlank()) it.content else it.content + "\n\n" + extra)
+            sendChatMessage(request).collect { event ->
+                when (event) {
+                    is ChatEvent.Chunk -> {
+                        contentBuf.append(event.text)
+                        streamingContent.value = contentBuf.toString()
+                    }
+
+                    is ChatEvent.ReasoningChunk -> {
+                        reasoningBuf.append(event.text)
+                        streamingReasoning.value = reasoningBuf.toString()
+                    }
+
+                    // AI 工具：回答里带可导入标记块时，按勾选的工具挨个入队，UI 逐个询问是否导入
+                    is ChatEvent.OutlineBlocksReady ->
+                        pendingImports.value = pendingImports.value + PendingImport.Outline(event.blocks)
+
+                    is ChatEvent.ChapterBlocksReady ->
+                        pendingImports.value = pendingImports.value + PendingImport.Chapters(event.blocks)
+
+                    is ChatEvent.Error -> errorMessage.value = event.message
+
+                    ChatEvent.Done -> ok = true
                 }
-            val turns = buildList {
-                // 「写入大纲工具」：勾选后随请求附带固定格式说明（保持勾选期间前缀稳定）
-                if (writeOutlineToolOn()) {
-                    add(ChatTurn(ChatRole.SYSTEM, AI_OUTLINE_TOOL_PROMPT))
-                }
-                // 「章节梗概导入工具」：勾选后随请求附带固定格式说明
-                if (chapterImportToolOn()) {
-                    add(ChatTurn(ChatRole.SYSTEM, AI_CHAPTER_TOOL_PROMPT))
-                }
-                if (context.isNotBlank()) {
-                    add(ChatTurn(ChatRole.SYSTEM, "以下是参考资料，请在写作时参考：\n$context"))
-                }
-                addAll(history)
-                // 编辑后继续：历史以助手消息结尾时，补一个「继续」的轮次
-                if (history.lastOrNull()?.role != ChatRole.USER) {
-                    add(ChatTurn(ChatRole.USER, "请基于以上内容继续往下写。"))
-                }
-            }
-            val contentBuf = StringBuilder()
-            val reasoningBuf = StringBuilder()
-            val result = repo.sendToModel(
-                modelId,
-                AiRequest(turns = turns, model = "", temperature = 0f, maxTokens = 0, systemPrompt = systemPrompt)
-            ) { dc, dr ->
-                if (dc.isNotEmpty()) {
-                    contentBuf.append(dc)
-                    streamingContent.value = contentBuf.toString()
-                }
-                if (dr.isNotEmpty()) {
-                    reasoningBuf.append(dr)
-                    streamingReasoning.value = reasoningBuf.toString()
-                }
-            }
-            if (result.success) {
-                // 新版本插入前先清除旧版本的展示标记
-                if (replyToUserId != 0L) repo.deactivateVariants(replyToUserId)
-                repo.addMessage(
-                    sid, ChatRole.ASSISTANT, result.content,
-                    replyToId = replyToUserId,
-                    variantIndex = variantIndex,
-                    reasoning = result.reasoning,
-                    promptTokens = result.promptTokens,
-                    completionTokens = result.completionTokens,
-                    cachedTokens = result.cachedTokens
-                )
-                // AI 工具：回答里带可导入标记块时，按勾选的工具挨个入队，UI 逐个询问是否导入
-                val imports = mutableListOf<PendingImport>()
-                if (writeOutlineToolOn()) {
-                    parseAiOutlineBlocks(result.content)
-                        .takeIf { it.isNotEmpty() }
-                        ?.let { imports += PendingImport.Outline(it) }
-                }
-                if (chapterImportToolOn()) {
-                    parseAiChapterBlocks(result.content)
-                        .takeIf { it.isNotEmpty() }
-                        ?.let { imports += PendingImport.Chapters(it) }
-                }
-                if (imports.isNotEmpty()) pendingImports.value = pendingImports.value + imports
-                return true
-            } else {
-                errorMessage.value = result.error
-                return false
             }
         } finally {
             // 仅当仍是当前这次生成时才复位：若已被「停止响应」取消或已被新任务接管，则不要覆盖新的生成态
@@ -891,6 +837,7 @@ class AiChatViewModel(
                 streamingReasoning.value = ""
             }
         }
+        return ok
     }
 
     /**
@@ -907,7 +854,7 @@ class AiChatViewModel(
     private suspend fun chapterBlockSuffix(): String {
         if (!currentSummaryOn.value) return ""
         val chapterId = fixedChapterId ?: return ""
-        val ch = repo.getChapter(chapterId) ?: return ""
+        val ch = bookRepository.getChapter(chapterId) ?: return ""
         return buildString {
             append("【本章】").append(ch.title)
             if (ch.summary.isNotBlank()) append('\n').append("梗概：").append(ch.summary)

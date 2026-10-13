@@ -48,6 +48,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.DragHandle
+import androidx.compose.material.icons.filled.DriveFileMove
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.AlertDialog
@@ -251,7 +252,8 @@ fun BookDetailScreen(
                     onDeleteCategory = { vm.deleteCategory(it) },
                     onRenameCategory = { k, n -> vm.renameCategory(k, n) },
                     onSave = { vm.saveOutline(it) },
-                    onDelete = { vm.deleteOutline(it) }
+                    onDelete = { vm.deleteOutline(it) },
+                    onMove = { item, cat -> vm.moveOutline(item, cat) }
                 )
             }
         }
@@ -480,7 +482,8 @@ private fun OutlineTab(
     onDeleteCategory: (String) -> Unit,
     onRenameCategory: (String, String) -> Unit,
     onSave: (OutlineItem) -> Unit,
-    onDelete: (Long) -> Unit
+    onDelete: (Long) -> Unit,
+    onMove: (OutlineItem, String) -> Unit
 ) {
     var category by remember { mutableStateOf(categories.firstOrNull().orEmpty()) }
     var editing by remember { mutableStateOf<OutlineItem?>(null) }
@@ -491,6 +494,8 @@ private fun OutlineTab(
     var labelToRename by remember { mutableStateOf<String?>(null) }
     var labelToDelete by remember { mutableStateOf<String?>(null) }
     var itemToDelete by remember { mutableStateOf<OutlineItem?>(null) }
+    // 待移动到其他标签的条目
+    var itemToMove by remember { mutableStateOf<OutlineItem?>(null) }
 
     // 标签被删除后，回落到第一个标签
     LaunchedEffect(categories) {
@@ -567,6 +572,7 @@ private fun OutlineTab(
                 OutlineCard(
                     item = item,
                     onEdit = { editing = item; showEditor = true },
+                    onMove = { itemToMove = item },
                     onDelete = { itemToDelete = item }
                 )
             }
@@ -614,6 +620,22 @@ private fun OutlineTab(
             message = "删除后无法恢复。",
             onConfirm = { onDelete(item.id) },
             onDismiss = { itemToDelete = null }
+        )
+    }
+
+    // 移动条目到其他标签：列出除当前标签外的全部分类
+    itemToMove?.let { item ->
+        val others = categories.filter { it != item.category }
+        ActionMenuDialog(
+            title = "移动「${item.title.ifBlank { "该条目" }}」到其他标签",
+            actions = if (others.isEmpty()) emptyList()
+            else others.map { key ->
+                outlineCategoryLabel(key) to {
+                    onMove(item, key)
+                    itemToMove = null
+                }
+            },
+            onDismiss = { itemToMove = null }
         )
     }
 
@@ -672,7 +694,12 @@ private fun CategoryChip(
 
 /** 大纲条目卡片：默认最多三行，超出可点击展开；已完整展示时点击无反应 */
 @Composable
-private fun OutlineCard(item: OutlineItem, onEdit: () -> Unit, onDelete: () -> Unit) {
+private fun OutlineCard(
+    item: OutlineItem,
+    onEdit: () -> Unit,
+    onMove: () -> Unit,
+    onDelete: () -> Unit
+) {
     val pairs = remember(item.content) { parseOutlineFields(item.content) }
     val head = pairs.firstOrNull()
     val body = pairs.drop(1)
@@ -708,6 +735,9 @@ private fun OutlineCard(item: OutlineItem, onEdit: () -> Unit, onDelete: () -> U
             Spacer(Modifier.width(8.dp))
             IconButton(onClick = onEdit) {
                 Icon(Icons.Filled.Edit, contentDescription = "编辑", Modifier.size(18.dp))
+            }
+            IconButton(onClick = onMove) {
+                Icon(Icons.Filled.DriveFileMove, contentDescription = "移动", Modifier.size(18.dp))
             }
             IconButton(onClick = onDelete) {
                 Icon(Icons.Filled.Delete, contentDescription = "删除", Modifier.size(18.dp))

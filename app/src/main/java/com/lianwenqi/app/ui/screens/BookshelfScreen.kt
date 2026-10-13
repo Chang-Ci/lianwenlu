@@ -367,25 +367,28 @@ fun BookshelfScreen(
                             ) { Text(if (allSelected) "取消全选" else "全选") }
                         }
                         Spacer(Modifier.height(8.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        // 三个按钮等分一行：压缩内边距并禁止换行，避免「纳入分组」被挤成两行
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             OutlinedButton(
                                 onClick = {
                                     batchMode = false
                                     selected.value = emptySet()
                                 },
-                                modifier = Modifier.weight(1f)
-                            ) { Text("取消") }
-                            Spacer(Modifier.width(8.dp))
+                                modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(horizontal = 4.dp)
+                            ) { Text("取消", maxLines = 1, softWrap = false) }
                             OutlinedButton(
                                 onClick = { showBatchGroupPicker = true },
                                 enabled = selected.value.isNotEmpty(),
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(horizontal = 4.dp)
                             ) {
-                                Icon(Icons.Filled.DriveFileMove, null, Modifier.size(16.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text("纳入分组")
+                                Text("纳入分组", maxLines = 1, softWrap = false)
                             }
-                            Spacer(Modifier.width(8.dp))
                             Button(
                                 onClick = { confirmBatchDelete = true },
                                 enabled = selected.value.isNotEmpty(),
@@ -393,11 +396,10 @@ fun BookshelfScreen(
                                     containerColor = MaterialTheme.colorScheme.error,
                                     contentColor = MaterialTheme.colorScheme.onError
                                 ),
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(horizontal = 4.dp)
                             ) {
-                                Icon(Icons.Filled.DeleteOutline, null, Modifier.size(16.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text("删除")
+                                Text("删除", maxLines = 1, softWrap = false)
                             }
                         }
                     }

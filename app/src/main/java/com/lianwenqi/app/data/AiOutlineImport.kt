@@ -22,7 +22,7 @@ data class AiOutlineImportResult(
  */
 class AiOutlineImporter(
     private val prefs: Prefs,
-    private val repo: Repository
+    private val outlineRepository: OutlineRepository
 ) {
     suspend fun import(bookId: Long, blocks: List<AiOutlineBlock>): AiOutlineImportResult {
         var categories = prefs.outlineCategories(bookId) ?: defaultOutlineKeys
@@ -41,10 +41,10 @@ class AiOutlineImporter(
                 newCategories += block.type
             }
 
-            val existing = repo.getOutline(bookId).filter { it.category == categoryKey }
+            val existing = outlineRepository.getOutline(bookId).filter { it.category == categoryKey }
             val displayName = uniqueName(block.name, existing.map { displayNameOf(it) })
             val fields = listOf(OUTLINE_HEAD_LABEL to displayName) + block.fields
-            repo.saveOutline(
+            outlineRepository.saveOutline(
                 OutlineItem(
                     bookId = bookId,
                     category = categoryKey,

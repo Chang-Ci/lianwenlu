@@ -29,6 +29,9 @@ val AI_TOOLS: List<AiToolInfo> = listOf(
     )
 )
 
+/** 解析结果：[blocks] 为解析出的区块；[malformed] 为真表示存在「标记存在但无法解析」的畸形区块 */
+data class AiBlocksResult<T>(val blocks: List<T>, val malformed: Boolean)
+
 /** 章节区块的起止标记：AI 回答 / 粘贴文本中出现该标记即视为可导入的章节梗概 */
 const val AI_CHAPTER_BEGIN = "<<<AI_CHAPTER_JSON_V1>>>"
 const val AI_CHAPTER_END = "<<<END_AI_CHAPTER_JSON_V1>>>"
@@ -77,40 +80,57 @@ private data class AiChapterPayload(val chapters: List<AiChapterDto> = emptyList
 private val aiChapterJson = Json { ignoreUnknownKeys = true }
 
 /**
- * 从文本中解析全部章节梗概区块（支持一段文本里含多个标记块）。
- * 解析失败的标记块会被跳过；一个都没有时返回空列表。
+ * 从文本中解析全部章节梗概区块，并额外报告是否存在畸形区块。
+ * 与 [parseAiChapterBlocks] 的区别：不静默吞掉解析失败，而是通过 [AiBlocksResult.malformed] 暴露。
  */
-fun parseAiChapterBlocks(text: String): List<AiChapterBlock> {
+fun parseAiChapterBlocksResult(text: String): AiBlocksResult<AiChapterBlock> {
     val out = mutableListOf<AiChapterBlock>()
+    var malformed = false
     var from = 0
     while (true) {
         val begin = text.indexOf(AI_CHAPTER_BEGIN, from)
         if (begin < 0) break
         val jsonStart = begin + AI_CHAPTER_BEGIN.length
         val end = text.indexOf(AI_CHAPTER_END, jsonStart)
-        if (end < 0) break
+        if (end < 0) {
+            // 有开始标记却没有结束标记 → 畸形
+            malformed = true
+            break
+        }
         val json = text.substring(jsonStart, end).trim()
-        runCatching {
+        val chapters = runCatching {
             aiChapterJson.decodeFromString(AiChapterPayload.serializer(), json).chapters
-        }.getOrDefault(emptyList()).forEach { c ->
-            if (c.chapterName.isNotBlank()) {
-                out.add(
-                    AiChapterBlock(
-                        volume = c.volume.trim(),
-                        chapterName = c.chapterName.trim(),
-                        summary = c.summary,
-                        order = c.order?.let { el ->
-                            runCatching { el.jsonPrimitive.intOrNull }.getOrNull()
-                                ?: runCatching { el.jsonPrimitive.content.trim().toIntOrNull() }.getOrNull()
-                        } ?: 0
+        }.getOrNull()
+        if (chapters == null) {
+            // 标记存在但 JSON 解析失败 → 畸形
+            malformed = true
+        } else {
+            chapters.forEach { c ->
+                if (c.chapterName.isNotBlank()) {
+                    out.add(
+                        AiChapterBlock(
+                            volume = c.volume.trim(),
+                            chapterName = c.chapterName.trim(),
+                            summary = c.summary,
+                            order = c.order?.let { el ->
+                                runCatching { el.jsonPrimitive.intOrNull }.getOrNull()
+                                    ?: runCatching { el.jsonPrimitive.content.trim().toIntOrNull() }.getOrNull()
+                            } ?: 0
+                        )
                     )
-                )
+                }
             }
         }
         from = end + AI_CHAPTER_END.length
     }
-    return out
+    return AiBlocksResult(out, malformed)
 }
+
+/**
+ * 从文本中解析全部章节梗概区块（支持一段文本里含多个标记块）。
+ * 解析失败的标记块会被跳过；一个都没有时返回空列表。
+ */
+fun parseAiChapterBlocks(text: String): List<AiChapterBlock> = parseAiChapterBlocksResult(text).blocks
 
 
 /** 大纲区块的起止标记：AI 回答 / 粘贴文本中出现该标记即视为可导入内容 */
@@ -164,35 +184,52 @@ private data class AiOutlinePayload(val blocks: List<AiOutlineBlockDto> = emptyL
 private val aiOutlineJson = Json { ignoreUnknownKeys = true }
 
 /**
- * 从文本中解析全部大纲区块（支持一段文本里含多个标记块）。
- * 解析失败的标记块会被跳过；一个都没有时返回空列表。
+ * 从文本中解析全部大纲区块，并额外报告是否存在畸形区块。
+ * 与 [parseAiOutlineBlocks] 的区别：不静默吞掉解析失败，而是通过 [AiBlocksResult.malformed] 暴露。
  */
-fun parseAiOutlineBlocks(text: String): List<AiOutlineBlock> {
+fun parseAiOutlineBlocksResult(text: String): AiBlocksResult<AiOutlineBlock> {
     val out = mutableListOf<AiOutlineBlock>()
+    var malformed = false
     var from = 0
     while (true) {
         val begin = text.indexOf(AI_OUTLINE_BEGIN, from)
         if (begin < 0) break
         val jsonStart = begin + AI_OUTLINE_BEGIN.length
         val end = text.indexOf(AI_OUTLINE_END, jsonStart)
-        if (end < 0) break
+        if (end < 0) {
+            // 有开始标记却没有结束标记 → 畸形
+            malformed = true
+            break
+        }
         val json = text.substring(jsonStart, end).trim()
-        runCatching {
+        val blocks = runCatching {
             aiOutlineJson.decodeFromString(AiOutlinePayload.serializer(), json).blocks
-        }.getOrDefault(emptyList()).forEach { b ->
-            if (b.type.isNotBlank() && b.name.isNotBlank()) {
-                out.add(
-                    AiOutlineBlock(
-                        type = b.type.trim(),
-                        name = b.name.trim(),
-                        fields = b.fields
-                            .map { it.key.trim() to it.value }
-                            .filter { it.first.isNotBlank() }
+        }.getOrNull()
+        if (blocks == null) {
+            // 标记存在但 JSON 解析失败 → 畸形
+            malformed = true
+        } else {
+            blocks.forEach { b ->
+                if (b.type.isNotBlank() && b.name.isNotBlank()) {
+                    out.add(
+                        AiOutlineBlock(
+                            type = b.type.trim(),
+                            name = b.name.trim(),
+                            fields = b.fields
+                                .map { it.key.trim() to it.value }
+                                .filter { it.first.isNotBlank() }
+                        )
                     )
-                )
+                }
             }
         }
         from = end + AI_OUTLINE_END.length
     }
-    return out
+    return AiBlocksResult(out, malformed)
 }
+
+/**
+ * 从文本中解析全部大纲区块（支持一段文本里含多个标记块）。
+ * 解析失败的标记块会被跳过；一个都没有时返回空列表。
+ */
+fun parseAiOutlineBlocks(text: String): List<AiOutlineBlock> = parseAiOutlineBlocksResult(text).blocks

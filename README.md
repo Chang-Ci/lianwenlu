@@ -115,7 +115,7 @@
 ## 构建
 
 ```bash
-git clone https://github.com/<你的用户名>/lianwenlu.git
+git clone https://github.com/Twoforan/lianwenlu.git
 cd lianwenlu
 ./gradlew assembleDebug
 ```

@@ -126,15 +126,15 @@ private const val READER_FOOTER_SPACE = 22
 private const val CHAPTER_SWIPE_PX = 140f
 
 class ReaderViewModel(container: AppContainer, private val bookId: Long) : ViewModel() {
-    private val repo = container.repository
+    private val bookRepository = container.bookRepository
     private val prefs = container.prefs
 
     val book: StateFlow<Book?> =
-        repo.observeBook(bookId).stateIn(viewModelScope, SharingStarted.Eagerly, null)
+        bookRepository.observeBook(bookId).stateIn(viewModelScope, SharingStarted.Eagerly, null)
     val chapters: StateFlow<List<Chapter>> =
-        repo.observeChapters(bookId).stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+        bookRepository.observeChapters(bookId).stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
     val volumes: StateFlow<List<Volume>> =
-        repo.observeVolumes(bookId).stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+        bookRepository.observeVolumes(bookId).stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
     // 阅读页样式与排版独立于编辑页，互不影响
     val style: StateFlow<StyleSettings> =
         prefs.readerStyle.stateIn(viewModelScope, SharingStarted.Eagerly, StyleSettings())

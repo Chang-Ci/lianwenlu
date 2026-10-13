@@ -54,13 +54,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 
 class BookSearchViewModel(container: AppContainer, val bookId: Long) : ViewModel() {
-    private val repo = container.repository
+    private val bookRepository = container.bookRepository
 
     val book: StateFlow<Book?> =
-        repo.observeBook(bookId).stateIn(viewModelScope, SharingStarted.Eagerly, null)
+        bookRepository.observeBook(bookId).stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     val chapters: StateFlow<List<Chapter>> =
-        repo.observeChapters(bookId)
+        bookRepository.observeChapters(bookId)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 }
 

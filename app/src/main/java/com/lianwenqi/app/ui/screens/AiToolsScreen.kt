@@ -74,17 +74,17 @@ import kotlinx.coroutines.withContext
 
 class AiToolsViewModel(private val container: AppContainer) : ViewModel() {
     private val prefs = container.prefs
-    private val repo = container.repository
-    private val importer = AiOutlineImporter(container.prefs, container.repository)
-    private val chapterImporter = AiChapterImporter(container.repository)
+    private val bookRepository = container.bookRepository
+    private val importer = AiOutlineImporter(container.prefs, container.outlineRepository)
+    private val chapterImporter = AiChapterImporter(container.bookRepository)
 
     val books: StateFlow<List<Book>> =
-        repo.observeBooks(SortMode.TIME, false)
+        bookRepository.observeBooks(SortMode.TIME, false)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     /** 书籍分组（选书弹窗的分组筛选用） */
     val groups: StateFlow<List<BookGroup>> =
-        repo.observeGroups().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        bookRepository.observeGroups().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val outlineToolEnabled: StateFlow<Boolean> =
         prefs.aiToolOutlineEnabled.stateIn(viewModelScope, SharingStarted.Eagerly, true)
@@ -97,7 +97,7 @@ class AiToolsViewModel(private val container: AppContainer) : ViewModel() {
     fun setChapterToolEnabled(v: Boolean) = viewModelScope.launch { prefs.setAiToolChapterEnabled(v) }
 
     /** 完整表单新建书籍，返回新书 id */
-    suspend fun createBookFull(r: BookFormResult): Long = repo.createBook(
+    suspend fun createBookFull(r: BookFormResult): Long = bookRepository.createBook(
         title = r.title.trim(),
         intro = r.intro.trim(),
         coverPath = r.coverPath,
@@ -112,7 +112,7 @@ class AiToolsViewModel(private val container: AppContainer) : ViewModel() {
         withContext(Dispatchers.IO) { FileUtil.copyToInternal(container.context, uri) }
 
     /** 新建分组并返回新分组 id（书籍表单内现场建组用） */
-    suspend fun createGroupAndGet(name: String): Long = repo.createGroup(name)
+    suspend fun createGroupAndGet(name: String): Long = bookRepository.createGroup(name)
 
     /** 把文本中的大纲区块导入指定书籍；返回 null 表示文本里没有可解析的内容 */
     suspend fun importOutline(bookId: Long, text: String): String? {
