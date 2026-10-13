@@ -608,12 +608,12 @@ fun AiChatScreen(initialBookId: Long?) {
         }
     }
     if (showSessions) {
-        // 0 全部 / 1 跟书 / 2 跟章节
+        // 0 全部 / 1 跟书 / 2 跟章节 / 3 未绑定
         var kind by remember { mutableIntStateOf(0) }
         var search by remember { mutableStateOf("") }
         // 分组筛选：null=全部，-1=未分组，其余为分组 id
         var filterGroupId by remember { mutableStateOf<Long?>(null) }
-        // 书籍筛选：null=全部，-1=未绑定（无书籍），其余为书籍 id
+        // 书籍筛选：null=全部，其余为书籍 id
         var filterBookId by remember { mutableStateOf<Long?>(null) }
         var filterVolumeId by remember { mutableStateOf<Long?>(null) }
         var filterChapterId by remember { mutableStateOf<Long?>(null) }
@@ -634,13 +634,10 @@ fun AiChatScreen(initialBookId: Long?) {
                 val matchKind = when (kind) {
                     1 -> s.chapterId == null && s.bookId != null
                     2 -> s.chapterId != null
+                    3 -> s.bookId == null
                     else -> true
                 }
-                val matchBook = when (filterBookId) {
-                    null -> true
-                    -1L -> s.bookId == null
-                    else -> s.bookId == filterBookId
-                }
+                val matchBook = filterBookId == null || s.bookId == filterBookId
                 val matchGroup = when (filterGroupId) {
                     null -> true
                     -1L -> books.firstOrNull { it.id == s.bookId }?.groupId == null && s.bookId != null
@@ -672,6 +669,7 @@ fun AiChatScreen(initialBookId: Long?) {
                         FilterChip(selected = kind == 0, onClick = { kind = 0 }, label = { Text("全部") })
                         FilterChip(selected = kind == 1, onClick = { kind = 1 }, label = { Text("跟书") })
                         FilterChip(selected = kind == 2, onClick = { kind = 2 }, label = { Text("跟章节") })
+                        FilterChip(selected = kind == 3, onClick = { kind = 3 }, label = { Text("未绑定") })
                     }
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -693,19 +691,19 @@ fun AiChatScreen(initialBookId: Long?) {
                         )
                         FilterDropdown(
                             label = "全部书籍",
-                            options = listOf<Pair<Long?, String>>(null to "全部书籍", -1L to "未绑定") +
+                            options = listOf<Pair<Long?, String>>(null to "全部书籍") +
                                 groupBooks.map { it.id to it.title },
                             selectedId = filterBookId,
                             onSelect = {
                                 filterBookId = it
                                 filterVolumeId = null
                                 filterChapterId = null
-                                if (it != null && it > 0) vm.loadFilterContext(it)
+                                if (it != null) vm.loadFilterContext(it)
                                 else vm.loadFilterContext(null)
                             }
                         )
                     }
-                    if (kind == 2 && filterBookId != null && filterBookId != -1L) {
+                    if (kind == 2 && filterBookId != null) {
                         Spacer(Modifier.height(8.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             FilterDropdown(

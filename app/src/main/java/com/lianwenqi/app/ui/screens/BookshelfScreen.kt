@@ -32,11 +32,17 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.DriveFileMove
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.LightMode
+import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.VerticalAlignTop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -131,7 +137,7 @@ fun BookshelfScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("书架") },
+                title = { Text(if (batchMode) "已选 ${selected.value.size} 本" else "书架") },
                 actions = {
                     IconButton(onClick = { vm.toggleNight() }) {
                         Icon(
@@ -186,15 +192,26 @@ fun BookshelfScreen(
         Box(modifier = Modifier.fillMaxSize().padding(padding)) {
             Column(modifier = Modifier.fillMaxSize()) {
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Box {
-                        OutlinedButton(onClick = { showSortMenu = true }) {
-                            Icon(Icons.AutoMirrored.Filled.Sort, null, Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text(if (sortMode == "TIME") "按时间" else "按名称")
-                            Text(if (sortAsc) " ↑" else " ↓")
+                        Surface(
+                            shape = RoundedCornerShape(20.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                            modifier = Modifier.clickable { showSortMenu = true }
+                        ) {
+                            Row(
+                                Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.AutoMirrored.Filled.Sort, null, Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    (if (sortMode == "TIME") "按时间" else "按名称") + if (sortAsc) " ↑" else " ↓",
+                                    style = MaterialTheme.typography.labelLarge
+                                )
+                            }
                         }
                         DropdownMenu(expanded = showSortMenu, onDismissRequest = { showSortMenu = false }) {
                             DropdownMenuItem(
@@ -216,26 +233,48 @@ fun BookshelfScreen(
                             )
                         }
                     }
-                    Spacer(Modifier.width(12.dp))
-                    Text("共 ${visibleBooks.size} 本", style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        "共 ${visibleBooks.size} 本",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                     Spacer(Modifier.weight(1f))
                     // 分组筛选：只显示某个分组的书籍
                     Box {
-                        OutlinedButton(onClick = { showGroupFilterMenu = true }) {
-                            Icon(Icons.Filled.Folder, null, Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text(
-                                groups.firstOrNull { it.id == groupFilter }?.name ?: "全部分组",
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Spacer(Modifier.width(4.dp))
-                            Icon(
-                                if (groupFilter != null) Icons.Filled.Close
-                                else Icons.Filled.KeyboardArrowDown,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp)
-                            )
+                        Surface(
+                            shape = RoundedCornerShape(20.dp),
+                            color = if (groupFilter != null) MaterialTheme.colorScheme.secondaryContainer
+                            else MaterialTheme.colorScheme.surfaceContainerHigh,
+                            modifier = Modifier.clickable { showGroupFilterMenu = true }
+                        ) {
+                            Row(
+                                Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Filled.Folder, null, Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    groups.firstOrNull { it.id == groupFilter }?.name ?: "全部分组",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                if (groupFilter != null) {
+                                    Icon(
+                                        Icons.Filled.Close,
+                                        contentDescription = "清除筛选",
+                                        modifier = Modifier.size(16.dp).clickable { vm.setGroupFilter(null) }
+                                    )
+                                } else {
+                                    Icon(
+                                        Icons.Filled.KeyboardArrowDown,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
                         }
                         DropdownMenu(
                             expanded = showGroupFilterMenu,
@@ -303,35 +342,64 @@ fun BookshelfScreen(
 
             // 批量管理：多选后可删除所选 / 纳入分组
             if (batchMode) {
+                val allSelected = visibleBooks.isNotEmpty() && visibleBooks.all { it.book.id in selected.value }
                 Surface(
                     modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth(),
                     color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
                     shadowElevation = 12.dp
                 ) {
-                    Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        // 取消：退出批量管理并清空选择
-                        TextButton(onClick = {
-                            batchMode = false
-                            selected.value = emptySet()
-                        }) { Text("取消") }
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            "已选 ${selected.value.size} 本",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                        Spacer(Modifier.weight(1f))
-                        OutlinedButton(
-                            onClick = { showBatchGroupPicker = true },
-                            enabled = selected.value.isNotEmpty()
-                        ) { Text("纳入分组") }
-                        Spacer(Modifier.width(8.dp))
-                        Button(
-                            onClick = { confirmBatchDelete = true },
-                            enabled = selected.value.isNotEmpty()
-                        ) { Text("删除所选") }
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "已选 ${selected.value.size} 本",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Spacer(Modifier.weight(1f))
+                            TextButton(
+                                enabled = visibleBooks.isNotEmpty(),
+                                onClick = {
+                                    selected.value =
+                                        if (allSelected) emptySet()
+                                        else visibleBooks.map { it.book.id }.toSet()
+                                }
+                            ) { Text(if (allSelected) "取消全选" else "全选") }
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            OutlinedButton(
+                                onClick = {
+                                    batchMode = false
+                                    selected.value = emptySet()
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) { Text("取消") }
+                            Spacer(Modifier.width(8.dp))
+                            OutlinedButton(
+                                onClick = { showBatchGroupPicker = true },
+                                enabled = selected.value.isNotEmpty(),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Filled.DriveFileMove, null, Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("纳入分组")
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Button(
+                                onClick = { confirmBatchDelete = true },
+                                enabled = selected.value.isNotEmpty(),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.error,
+                                    contentColor = MaterialTheme.colorScheme.onError
+                                ),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Filled.DeleteOutline, null, Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("删除")
+                            }
+                        }
                     }
                 }
             }
@@ -409,40 +477,61 @@ fun BookshelfScreen(
                 Text(
                     item.book.title,
                     style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(16.dp)
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
                 )
-                SheetAction("预览") {
-                    sheetBook = null
-                    scope.launch {
-                        val first = vm.chaptersOf(item.book.id).firstOrNull()
-                        if (first == null) {
-                            Toast.makeText(context, "该书还没有章节", Toast.LENGTH_SHORT).show()
-                        } else {
-                            onPreviewBook(item.book.id, first.id)
+                HorizontalDivider()
+                // 宫格操作：图标 + 文案，四列一行
+                val actions = listOf(
+                    SheetActionItem(Icons.Filled.MenuBook, "预览本书") {
+                        sheetBook = null
+                        scope.launch {
+                            val first = vm.chaptersOf(item.book.id).firstOrNull()
+                            if (first == null) {
+                                Toast.makeText(context, "该书还没有章节", Toast.LENGTH_SHORT).show()
+                            } else {
+                                onPreviewBook(item.book.id, first.id)
+                            }
+                        }
+                    },
+                    SheetActionItem(Icons.Filled.Edit, "编辑本书") {
+                        editBookTarget = item.book
+                        sheetBook = null
+                    },
+                    SheetActionItem(Icons.Filled.FileDownload, "导出书籍") { showExportDialog = true },
+                    SheetActionItem(Icons.Filled.DriveFileMove, "移至分组") { showGroupPicker = true },
+                    SheetActionItem(Icons.Filled.Share, "分享本书") {
+                        sheetBook = null
+                        scope.launch {
+                            val chapters = vm.chaptersOf(item.book.id)
+                            val volumes = vm.volumesOf(item.book.id)
+                            val f = ExportUtil.bookToTxt(context, item.book, volumes, chapters, singleFile = true)
+                            ExportUtil.shareFile(context, f, "text/plain", "分享书籍")
+                        }
+                    },
+                    SheetActionItem(
+                        Icons.Filled.VerticalAlignTop,
+                        if (item.book.pinned) "取消置顶" else "置顶本书"
+                    ) {
+                        vm.togglePin(item.book); sheetBook = null
+                    },
+                    SheetActionItem(Icons.Filled.DeleteOutline, "删除本书", danger = true) {
+                        deleteTarget = item.book
+                        sheetBook = null
+                    }
+                )
+                Column(
+                    Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    actions.chunked(4).forEach { rowItems ->
+                        Row(Modifier.fillMaxWidth()) {
+                            rowItems.forEach { a -> SheetGridAction(a, Modifier.weight(1f)) }
+                            repeat(4 - rowItems.size) { Spacer(Modifier.weight(1f)) }
                         }
                     }
-                }
-                SheetAction("编辑") {
-                    editBookTarget = item.book
-                    sheetBook = null
-                }
-                SheetAction("导出书籍") { showExportDialog = true }
-                SheetAction("移动分组") { showGroupPicker = true }
-                SheetAction("备份") {
-                    sheetBook = null
-                    scope.launch {
-                        val chapters = vm.chaptersOf(item.book.id)
-                        val volumes = vm.volumesOf(item.book.id)
-                        val f = ExportUtil.bookToTxt(context, item.book, volumes, chapters, singleFile = true)
-                        ExportUtil.shareFile(context, f, "text/plain", "备份书籍")
-                    }
-                }
-                SheetAction(if (item.book.pinned) "取消置顶" else "置顶") {
-                    vm.togglePin(item.book); sheetBook = null
-                }
-                SheetAction("删除", danger = true) {
-                    deleteTarget = item.book
-                    sheetBook = null
                 }
             }
         }
@@ -600,16 +689,44 @@ private fun doExport(
     }
 }
 
+/** 底部「更多」宫格的一项：图标 + 文案 */
+private data class SheetActionItem(
+    val icon: androidx.compose.ui.graphics.vector.ImageVector,
+    val label: String,
+    val danger: Boolean = false,
+    val onClick: () -> Unit
+)
+
+/** 底部「更多」宫格按钮：圆形底 + 图标 + 文案（参考系统图库风格） */
 @Composable
-private fun SheetAction(text: String, danger: Boolean = false, onClick: () -> Unit) {
-    Text(
-        text = text,
-        color = if (danger) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 20.dp, vertical = 14.dp)
-    )
+private fun SheetGridAction(item: SheetActionItem, modifier: Modifier = Modifier) {
+    val tint = if (item.danger) MaterialTheme.colorScheme.error
+    else MaterialTheme.colorScheme.onSurface
+    Column(
+        modifier = modifier.clickable(onClick = item.onClick).padding(vertical = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Surface(
+            shape = CircleShape,
+            color = if (item.danger) MaterialTheme.colorScheme.errorContainer
+            else MaterialTheme.colorScheme.surfaceContainerHighest
+        ) {
+            Icon(
+                item.icon,
+                contentDescription = null,
+                tint = tint,
+                modifier = Modifier.padding(12.dp).size(22.dp)
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            item.label,
+            style = MaterialTheme.typography.labelMedium,
+            color = tint,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
 }
 
 @Composable

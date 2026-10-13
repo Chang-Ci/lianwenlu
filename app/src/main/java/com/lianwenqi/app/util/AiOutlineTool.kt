@@ -50,8 +50,6 @@ const val AI_CHAPTER_TOOL_PROMPT: String = """当你需要生成可导入的章�
 <<<END_AI_CHAPTER_JSON_V1>>>
 
 注意：
-- 不要使用 AI_OUTLINE_JSON_V1。
-- 顶层必须是 chapters，不是 blocks。
 - 每章一条，同一分卷也要重复写 volume。
 - 不要输出 Markdown 代码块。
 - 不要输出 JSON 以外的说明文字。"""

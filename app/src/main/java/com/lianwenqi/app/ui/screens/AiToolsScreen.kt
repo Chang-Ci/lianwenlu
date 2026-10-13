@@ -59,6 +59,7 @@ import com.lianwenqi.app.ui.appViewModel
 import com.lianwenqi.app.ui.components.BookFormResult
 import com.lianwenqi.app.util.AI_CHAPTER_TOOL_PROMPT
 import com.lianwenqi.app.util.AI_OUTLINE_TOOL_PROMPT
+import com.lianwenqi.app.util.AI_TOOLS
 import com.lianwenqi.app.util.AI_TOOL_IMPORT_CHAPTER
 import com.lianwenqi.app.util.AI_TOOL_WRITE_OUTLINE
 import com.lianwenqi.app.util.FileUtil
@@ -147,8 +148,8 @@ fun AiToolsScreen(onBack: () -> Unit) {
     val vm = appViewModel { AiToolsViewModel(it) }
     val outlineEnabled by vm.outlineToolEnabled.collectAsState()
     val chapterEnabled by vm.chapterToolEnabled.collectAsState()
-    // 当前展开的工具 id
-    var expanded by remember { mutableStateOf<String?>(AI_TOOL_WRITE_OUTLINE) }
+    // 当前展开的工具 id 集合（默认全部展开）
+    var expandedIds by remember { mutableStateOf(AI_TOOLS.map { it.id }.toSet()) }
     var showImport by remember { mutableStateOf(false) }
     var showChapterImport by remember { mutableStateOf(false) }
 
@@ -180,7 +181,10 @@ fun AiToolsScreen(onBack: () -> Unit) {
                     Row(
                         Modifier
                             .fillMaxWidth()
-                            .clickable { expanded = if (expanded == AI_TOOL_WRITE_OUTLINE) null else AI_TOOL_WRITE_OUTLINE }
+                            .clickable {
+                                expandedIds = if (AI_TOOL_WRITE_OUTLINE in expandedIds)
+                                    expandedIds - AI_TOOL_WRITE_OUTLINE else expandedIds + AI_TOOL_WRITE_OUTLINE
+                            }
                             .padding(12.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -193,12 +197,12 @@ fun AiToolsScreen(onBack: () -> Unit) {
                             )
                         }
                         Icon(
-                            if (expanded == AI_TOOL_WRITE_OUTLINE) Icons.Filled.KeyboardArrowUp
+                            if (AI_TOOL_WRITE_OUTLINE in expandedIds) Icons.Filled.KeyboardArrowUp
                             else Icons.Filled.KeyboardArrowDown,
                             contentDescription = null
                         )
                     }
-                    if (expanded == AI_TOOL_WRITE_OUTLINE) {
+                    if (AI_TOOL_WRITE_OUTLINE in expandedIds) {
                         HorizontalDivider()
                         Row(
                             Modifier
@@ -268,7 +272,10 @@ fun AiToolsScreen(onBack: () -> Unit) {
                     Row(
                         Modifier
                             .fillMaxWidth()
-                            .clickable { expanded = if (expanded == AI_TOOL_IMPORT_CHAPTER) null else AI_TOOL_IMPORT_CHAPTER }
+                            .clickable {
+                                expandedIds = if (AI_TOOL_IMPORT_CHAPTER in expandedIds)
+                                    expandedIds - AI_TOOL_IMPORT_CHAPTER else expandedIds + AI_TOOL_IMPORT_CHAPTER
+                            }
                             .padding(12.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -281,12 +288,12 @@ fun AiToolsScreen(onBack: () -> Unit) {
                             )
                         }
                         Icon(
-                            if (expanded == AI_TOOL_IMPORT_CHAPTER) Icons.Filled.KeyboardArrowUp
+                            if (AI_TOOL_IMPORT_CHAPTER in expandedIds) Icons.Filled.KeyboardArrowUp
                             else Icons.Filled.KeyboardArrowDown,
                             contentDescription = null
                         )
                     }
-                    if (expanded == AI_TOOL_IMPORT_CHAPTER) {
+                    if (AI_TOOL_IMPORT_CHAPTER in expandedIds) {
                         HorizontalDivider()
                         Row(
                             Modifier
