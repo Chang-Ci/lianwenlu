@@ -73,6 +73,16 @@ class UpdateChecker(private val context: Context) {
         context.packageManager.getPackageInfo(context.packageName, 0).versionName
     }.getOrNull().orEmpty().ifBlank { "0" }
 
+    /** 当前已安装的 versionCode（版本名命名不一致时用它比较更可靠） */
+    private fun currentVersionCode(): Long = runCatching {
+        val info = context.packageManager.getPackageInfo(context.packageName, 0)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            info.longVersionCode
+        } else {
+            @Suppress("DEPRECATION") info.versionCode.toLong()
+        }
+    }.getOrDefault(0L)
+
     /** 请求最新发布并与当前版本对比 */
     suspend fun check(): UpdateCheckResult = withContext(Dispatchers.IO) {
         val request = Request.Builder()
@@ -91,19 +101,32 @@ class UpdateChecker(private val context: Context) {
                         val latest = release.tagName.removePrefix("v").removePrefix("V")
                         if (latest.isBlank()) {
                             UpdateCheckResult.Failed("检查失败：发布信息不完整")
-                        } else if (!isNewer(latest, currentVersionName())) {
-                            UpdateCheckResult.UpToDate
                         } else {
-                            val apk = release.assets.firstOrNull { it.name.endsWith(".apk", true) }
-                            UpdateCheckResult.Newer(
-                                UpdateInfo(
-                                    versionName = latest,
-                                    releaseNotes = release.body.trim(),
-                                    htmlUrl = release.htmlUrl,
-                                    apkUrl = apk?.url,
-                                    apkName = apk?.name ?: "lianwenlu-$latest.apk"
+                            // 版本号命名历史不一致（3.0 → 3.01 → 3.02 → 3.1），
+                            // 优先用发布说明里的 versionCode 比较；拿不到时退回 versionName 分段比较。
+                            val remoteCode =
+                                Regex("versionCode\\s*(\\d+)").find(release.body)
+                                    ?.groupValues?.get(1)?.toLongOrNull()
+                            val currentCode = currentVersionCode()
+                            val newer = if (remoteCode != null && currentCode > 0) {
+                                remoteCode > currentCode
+                            } else {
+                                isNewer(latest, currentVersionName())
+                            }
+                            if (!newer) {
+                                UpdateCheckResult.UpToDate
+                            } else {
+                                val apk = release.assets.firstOrNull { it.name.endsWith(".apk", true) }
+                                UpdateCheckResult.Newer(
+                                    UpdateInfo(
+                                        versionName = latest,
+                                        releaseNotes = release.body.trim(),
+                                        htmlUrl = release.htmlUrl,
+                                        apkUrl = apk?.url,
+                                        apkName = apk?.name ?: "lianwenlu-$latest.apk"
+                                    )
                                 )
-                            )
+                            }
                         }
                     }
                 }
