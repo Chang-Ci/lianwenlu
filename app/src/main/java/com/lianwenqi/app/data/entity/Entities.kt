@@ -252,46 +252,65 @@ data class PrefixEntry(
     val category: String = ""
 )
 
-/**
- * 会话级前缀：只增不减 —— 取消勾选不移除已冻结条目；只有「重新勾选」时才对比内容并原位替换，
- * 新勾选的内容追加在末尾，持续勾选的条目一律不再刷新，从而不破坏已有前缀的字节结构（利于缓存命中）。
- * 随 [ChatSession.prefix] 落库，会话删除即随之删除，新建对话则是全新的空前缀。
- */
 @Serializable
 data class SessionPrefix(
     /** 自定义前缀（纯文本）：建立前缀时从设置取一次后冻结在本会话，之后不随设置变化 */
     val custom: String = "",
     /** 是否已建立：为 false 时下次发送才会取一次设置里的自定义前缀 */
     val initialized: Boolean = false,
+    /**
+     * 「一开始的上下文预设」：仅在首轮发送时把当时勾选的书籍 / 大纲 / 章节冻结进这里，
+     * 作为最前面的参考资料块，之后不再增长，从而不破坏「预设 + 历史对话」的前缀字节结构。
+     */
     val books: List<PrefixEntry> = emptyList(),
     val outlines: List<PrefixEntry> = emptyList(),
     val chapters: List<PrefixEntry> = emptyList(),
     /**
      * 上一次发送时勾选的 id 集合（用于判断「本次是否为重新勾选」）：
-     * 只有从「上次没勾选」变成「本次勾选」的条目才对比内容并写入，
-     * 持续勾选的条目一律不再刷新，保证前缀最稳定。
+     * 只有从「上次没勾选」变成「本次勾选」的条目才需要处理，持续勾选的条目一律不再刷新。
      */
     val checkedBooks: List<Long> = emptyList(),
     val checkedOutlines: List<Long> = emptyList(),
-    val checkedChapters: List<Long> = emptyList()
+    val checkedChapters: List<Long> = emptyList(),
+    /**
+     * 已经「追加到历史对话尾端」的条目 id（只增不减）：
+     * 首轮之后新勾选的内容不再回填前置预设，而是渲染成文本挂到当轮用户消息尾端成为历史的一部分；
+     * 记录这些 id 后，后续「取消勾选再重新勾选」不会重复追加。
+     */
+    val tailBooks: List<Long> = emptyList(),
+    val tailOutlines: List<Long> = emptyList(),
+    val tailChapters: List<Long> = emptyList()
 ) {
     fun encode(): String = prefixJson.encodeToString(serializer(), this)
 
-    /** 拼接「参考资料」文本；[includeChapters] / [includeOutlines] 对应该前缀化开关 */
-    fun renderReference(includeChapters: Boolean, includeOutlines: Boolean): String {
+    /** 拼接前置「参考资料」文本；[includeChapters] / [includeOutlines] 对应该前缀化开关 */
+    fun renderReference(includeChapters: Boolean, includeOutlines: Boolean): String =
+        renderEntries(
+            books = if (includeChapters) books else emptyList(),
+            outlines = if (includeOutlines) outlines else emptyList(),
+            chapters = if (includeChapters) chapters else emptyList()
+        )
+
+    /**
+     * 按「书籍 → 大纲 → 章节」顺序拼接条目文本（大纲按相邻分类去重输出分类标题）。
+     * 既用于前置的参考资料预设，也用于「本轮新勾选内容」追加到历史对话尾端。
+     */
+    fun renderEntries(
+        books: List<PrefixEntry>,
+        outlines: List<PrefixEntry>,
+        chapters: List<PrefixEntry>
+    ): String {
         val sb = StringBuilder()
-        if (includeChapters) books.forEach { sb.append(it.text) }
-        if (includeOutlines) {
-            var prevCategory: String? = null
-            outlines.forEach { entry ->
-                if (entry.category != prevCategory) {
-                    sb.append("【").append(outlineCategoryLabel(entry.category)).append("】\n")
-                }
-                sb.append(entry.text)
-                prevCategory = entry.category
+        books.forEach { sb.append(it.text) }
+        var prevCategory: String? = null
+        outlines.forEach { entry ->
+            if (entry.category != prevCategory) {
+                sb.append("【").append(outlineCategoryLabel(entry.category)).append("】\n")
             }
+            sb.append(entry.text)
+            prevCategory = entry.category
         }
-        if (includeChapters) chapters.forEach { sb.append(it.text) }
+        chapters.forEach { sb.append(it.text) }
         return sb.toString().trimEnd('\n')
     }
 

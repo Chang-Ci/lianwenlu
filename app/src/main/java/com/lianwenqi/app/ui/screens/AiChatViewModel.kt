@@ -655,17 +655,23 @@ class AiChatViewModel(
             }
         }
 
-        // 「＋本章梗概」：章节名与梗概作为附加提示词随消息落库（气泡里不显示），
-        // 成为历史对话的一部分（不进最前面的参考资料前缀块）。
+        // 「＋本章梗概」与「本轮新勾选的大纲 / 上下文」都作为附加提示词随消息落库（气泡里不显示），
+        // 成为历史对话的一部分（挂在消息尾端，不进最前面的参考资料预设块）。
         // 下一轮从数据库重建历史时与上一轮实际发送的内容逐字节一致 → 前缀不被改写 → 缓存命中稳定。
+        val prefix = prepareSessionPrefix(sid)
+        val extra = listOf(prefix.newReference, chapterBlockSuffix())
+            .filter { it.isNotBlank() }
+            .joinToString("\n\n")
         val userId = chatRepository.addMessage(
             sid, ChatRole.USER, text,
             contextSnapshot = currentSnapshot().encode(),
-            promptExtra = chapterBlockSuffix()
+            promptExtra = extra
         )
         if (overrideText == null) input.value = ""
-        // 勾选的书籍 / 章节 / 大纲会在发送时由 [prepareSessionPrefix] 冻结进会话前缀（只增不减）
-        runGeneration(sid, modelId, systemPrompt, replyToUserId = userId, historyEndId = userId, variantIndex = 0)
+        runGeneration(
+            sid, modelId, systemPrompt,
+            replyToUserId = userId, historyEndId = userId, variantIndex = 0, prefix = prefix
+        )
     }
 
     /** 当前勾选的上下文（书籍/章节/大纲 + 是否含梗概/正文） */
@@ -795,7 +801,8 @@ class AiChatViewModel(
         systemPrompt: String,
         replyToUserId: Long,
         historyEndId: Long,
-        variantIndex: Int
+        variantIndex: Int,
+        prefix: PreparedPrefix? = null
     ): Boolean {
         sending.value = true
         pendingReplyToId.value = replyToUserId
@@ -805,21 +812,22 @@ class AiChatViewModel(
         var ok = false
         val contentBuf = StringBuilder()
         val reasoningBuf = StringBuilder()
-        // 会话前缀：只增不减地把当前勾选内容冻结进去，并取出本轮要发的自定义前缀与参考资料前缀
-        val prefix = prepareSessionPrefix(sid)
+        // 会话前缀：正常发送路径已由 [prepareSessionPrefix] 冻结好并传入；
+        // 重新生成 / 编辑重发不新增用户消息，这里只读取已冻结的前缀（不做任何写入）。
+        val p = prefix ?: readSessionPrefix(sid)
         // 生成态的复位交由 [launchGenerating] 的 finally 统一处理（用 generationToken 判定归属）
         val request = SendChatRequest(
             sessionId = sid,
             modelId = modelId,
             systemPrompt = systemPrompt,
-            selection = liveSelection(prefix.contextOn, prefix.outlineOn),
+            selection = liveSelection(p.contextOn, p.outlineOn),
             replyToUserId = replyToUserId,
             historyEndId = historyEndId,
             variantIndex = variantIndex,
             writeOutlineTool = writeOutlineToolOn(),
             chapterImportTool = chapterImportToolOn(),
-            prefixText = prefix.custom,
-            referencePrefix = prefix.reference
+            prefixText = p.custom,
+            referencePrefix = p.reference
         )
         sendChatMessage(request).collect { event ->
             when (event) {
@@ -849,10 +857,13 @@ class AiChatViewModel(
     }
 
     /**
-     * 会话级前缀：把当前勾选的书籍 / 章节 / 大纲按「前缀化」开关冻结进会话前缀。
-     * 只增不减 —— 取消勾选不移除已冻结条目；只有「重新勾选」（上次没勾、本次勾）的条目才
-     * 重新渲染并对比内容、有变更则原位替换；持续勾选的条目一律不再刷新，前缀最稳定。
-     * 新勾选内容追加在末尾。前缀随会话保存，新建对话即全新前缀，删除会话随之删除。
+     * 会话级前缀：区分「一开始的上下文预设」与「后续新勾选内容」的注入位置。
+     * - 首轮（[SessionPrefix.initialized] 为 false）：把当时勾选的书籍 / 大纲 / 章节冻结成前置参考资料
+     *   预设块，本轮不产生尾部追加文本。
+     * - 之后每轮：只有「重新勾选」（上次没勾、本次勾）的条目才处理 —— 已在预设内的条目对比内容后
+     *   原位替换；从未冻结过的新条目渲染成文本作为「尾部追加」返回，由调用方挂到当轮用户消息尾端
+     *   （成为历史对话的一部分），从而不破坏「预设 + 历史对话」的前缀字节结构。
+     * 只增不减：取消勾选不移除已冻结内容，也不允许重复追加。
      */
     private suspend fun prepareSessionPrefix(sid: Long): PreparedPrefix {
         val contextOn = prefs.prefixContextEnabled.first()
@@ -860,47 +871,117 @@ class AiChatViewModel(
         val session = chatRepository.getSession(sid)
         val original = session?.prefix.orEmpty()
         var sp = SessionPrefix.decode(original)
-        // 首次建立前缀时把设置里的「自定义前缀」取一次，之后冻结在本会话内
-        if (!sp.initialized) {
+        val firstTime = !sp.initialized
+        if (firstTime) {
+            // 首次建立前缀时把设置里的「自定义前缀」取一次，之后冻结在本会话内
             sp = sp.copy(custom = prefs.prefixCustomText.first().trim(), initialized = true)
         }
+
+        // 本轮「重新勾选」的新条目（渲染后追加到历史对话尾端，成为历史的一部分）
+        val newBooks = mutableListOf<PrefixEntry>()
+        val newOutlines = mutableListOf<PrefixEntry>()
+        val newChapters = mutableListOf<PrefixEntry>()
+
         if (contextOn) {
             val bookIds = selectedBookIds.value.toList()
             val chapterIds =
                 (if (chapterAllSelected.value) contextChapterIds() else selectedChapterIds.value).toList()
-            val newBookIds = bookIds.filterNot { it in sp.checkedBooks }
-            val newChapterIds = chapterIds.filterNot { it in sp.checkedChapters }
-            newBookIds.forEach { bid ->
-                chatRepository.renderBookEntry(bid)?.let { text ->
-                    sp = sp.copy(books = sp.books.upsert(PrefixEntry(bid, text)))
+            if (firstTime) {
+                // 建立前置预设：把首轮勾选的书籍 / 章节一次性冻结进去
+                bookIds.forEach { bid ->
+                    chatRepository.renderBookEntry(bid)
+                        ?.let { sp = sp.copy(books = sp.books.upsert(PrefixEntry(bid, it))) }
                 }
-            }
-            newChapterIds.forEach { cid ->
-                chatRepository.renderChapterEntry(cid, includeSummary.value, includeContent.value)
-                    ?.let { text -> sp = sp.copy(chapters = sp.chapters.upsert(PrefixEntry(cid, text))) }
+                chapterIds.forEach { cid ->
+                    chatRepository.renderChapterEntry(cid, includeSummary.value, includeContent.value)
+                        ?.let { sp = sp.copy(chapters = sp.chapters.upsert(PrefixEntry(cid, it))) }
+                }
+            } else {
+                bookIds.filterNot { it in sp.checkedBooks }.forEach { bid ->
+                    when {
+                        // 已在预设内：对比内容后原位替换（重新勾选才刷新）
+                        sp.books.any { it.id == bid } ->
+                            chatRepository.renderBookEntry(bid)
+                                ?.let { sp = sp.copy(books = sp.books.upsert(PrefixEntry(bid, it))) }
+                        // 已追加过尾部：不重复追加
+                        bid in sp.tailBooks -> Unit
+                        // 新条目：渲染后追加到历史尾端
+                        else -> chatRepository.renderBookEntry(bid)?.let { text ->
+                            newBooks += PrefixEntry(bid, text)
+                            sp = sp.copy(tailBooks = sp.tailBooks + bid)
+                        }
+                    }
+                }
+                chapterIds.filterNot { it in sp.checkedChapters }.forEach { cid ->
+                    when {
+                        sp.chapters.any { it.id == cid } ->
+                            chatRepository.renderChapterEntry(cid, includeSummary.value, includeContent.value)
+                                ?.let { sp = sp.copy(chapters = sp.chapters.upsert(PrefixEntry(cid, it))) }
+                        cid in sp.tailChapters -> Unit
+                        else -> chatRepository.renderChapterEntry(cid, includeSummary.value, includeContent.value)
+                            ?.let { text ->
+                                newChapters += PrefixEntry(cid, text)
+                                sp = sp.copy(tailChapters = sp.tailChapters + cid)
+                            }
+                    }
+                }
             }
             sp = sp.copy(checkedBooks = bookIds, checkedChapters = chapterIds)
         }
+
         if (outlineOn) {
             val outlineIds = selectedOutlineIds.value.toList()
-            val newOutlineIds = outlineIds.filterNot { it in sp.checkedOutlines }
-            newOutlineIds.forEach { oid ->
-                chatRepository.renderOutlineEntry(oid)?.let { text ->
-                    val category = _outline.value.firstOrNull { it.id == oid }?.category.orEmpty()
-                    sp = sp.copy(outlines = sp.outlines.upsert(PrefixEntry(oid, text, category)))
+            if (firstTime) {
+                outlineIds.forEach { oid ->
+                    renderOutlineEntry(oid)?.let { sp = sp.copy(outlines = sp.outlines.upsert(it)) }
+                }
+            } else {
+                outlineIds.filterNot { it in sp.checkedOutlines }.forEach { oid ->
+                    when {
+                        sp.outlines.any { it.id == oid } ->
+                            renderOutlineEntry(oid)?.let { sp = sp.copy(outlines = sp.outlines.upsert(it)) }
+                        oid in sp.tailOutlines -> Unit
+                        else -> renderOutlineEntry(oid)?.let { entry ->
+                            newOutlines += entry
+                            sp = sp.copy(tailOutlines = sp.tailOutlines + oid)
+                        }
+                    }
                 }
             }
             sp = sp.copy(checkedOutlines = outlineIds)
         }
+
         if (session != null && sp.encode() != original) {
             chatRepository.updateSessionPrefix(sid, sp.encode())
         }
+        val appended = sp.renderEntries(newBooks, newOutlines, newChapters)
+        return PreparedPrefix(
+            custom = sp.custom,
+            reference = sp.renderReference(includeChapters = contextOn, includeOutlines = outlineOn),
+            contextOn = contextOn,
+            outlineOn = outlineOn,
+            newReference = if (appended.isBlank()) "" else "以下是新增参考资料，请在写作时参考：\n$appended"
+        )
+    }
+
+    /** 只读取已冻结的会话前缀（重新生成 / 编辑重发等不新增用户消息的场景），不做任何写入 */
+    private suspend fun readSessionPrefix(sid: Long): PreparedPrefix {
+        val contextOn = prefs.prefixContextEnabled.first()
+        val outlineOn = prefs.prefixOutlineEnabled.first()
+        val sp = SessionPrefix.decode(chatRepository.getSession(sid)?.prefix.orEmpty())
         return PreparedPrefix(
             custom = sp.custom,
             reference = sp.renderReference(includeChapters = contextOn, includeOutlines = outlineOn),
             contextOn = contextOn,
             outlineOn = outlineOn
         )
+    }
+
+    /** 渲染单条大纲条目（文本 + 分类），分类取自当前已加载的大纲列表 */
+    private suspend fun renderOutlineEntry(oid: Long): PrefixEntry? {
+        val text = chatRepository.renderOutlineEntry(oid) ?: return null
+        val category = _outline.value.firstOrNull { it.id == oid }?.category.orEmpty()
+        return PrefixEntry(oid, text, category)
     }
 
     /**
@@ -922,12 +1003,14 @@ class AiChatViewModel(
         )
     }
 
-    /** 会话前缀准备结果：自定义前缀文本 + 参考资料前缀 + 两个前缀化开关状态 */
+    /** 会话前缀准备结果：自定义前缀文本 + 前置参考资料 + 两个开关状态 + 本轮尾部追加文本 */
     private data class PreparedPrefix(
         val custom: String,
         val reference: String,
         val contextOn: Boolean,
-        val outlineOn: Boolean
+        val outlineOn: Boolean,
+        /** 本轮新勾选内容渲染出的文本（挂到当轮用户消息尾端），无新增时为空 */
+        val newReference: String = ""
     )
 
     /**
