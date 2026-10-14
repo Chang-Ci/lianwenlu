@@ -8,7 +8,6 @@ import com.lianwenqi.app.data.entity.AiModel
 import com.lianwenqi.app.data.entity.ChatMessage
 import com.lianwenqi.app.data.entity.ChatRole
 import com.lianwenqi.app.data.entity.ContextSnapshot
-import com.lianwenqi.app.data.entity.decodeContextSnapshot
 import com.lianwenqi.app.util.AI_CHAPTER_TOOL_PROMPT
 import com.lianwenqi.app.util.AI_OUTLINE_TOOL_PROMPT
 import com.lianwenqi.app.util.AiChapterBlock
@@ -40,8 +39,10 @@ data class SendChatRequest(
     val writeOutlineTool: Boolean,
     /** 「章节梗概导入工具」当前是否生效 */
     val chapterImportTool: Boolean,
-    /** 「首轮全选」是否生效 */
-    val firstRoundPrefix: Boolean
+    /** 会话级的「自定义前缀」（纯文本），为空则不发送 */
+    val prefixText: String = "",
+    /** 会话已冻结的「参考资料前缀」（书籍/大纲/章节字面文本），为空则不发送 */
+    val referencePrefix: String = ""
 )
 
 /** 流式生成过程中对外吐出的事件 */
@@ -121,29 +122,19 @@ class SendChatMessageUseCase(
 ) {
     operator fun invoke(request: SendChatRequest): Flow<ChatEvent> = channelFlow {
         val allMessages = chatRepository.getMessages(request.sessionId)
-        // 「首轮全选」：当前没有手动勾选时，复用会话首条用户消息的上下文选择，
-        // 使最前面的「参考资料」前缀跨轮逐字节一致。
-        val firstSnap = if (request.firstRoundPrefix) {
-            allMessages.firstOrNull { it.role == ChatRole.USER && it.id <= request.historyEndId }
-                ?.let { decodeContextSnapshot(it.contextSnapshot) }
-        } else null
         val sel = request.selection
-        val outlineIds = if (request.firstRoundPrefix && sel.outlineIds.isEmpty()) {
-            firstSnap?.outlineIds.orEmpty()
-        } else {
-            sel.outlineIds
-        }
-        // 首轮为「全选章节」且当前已取消勾选时，冻结复用首轮章节（仅梗概/仅正文同首轮），
-        // 保证「参考资料」前缀跨轮不变；用户重新勾选章节则恢复实时选择。
-        val frozenChapters = firstSnap?.chapterAll == true &&
-            sel.chapterIds.isEmpty() && !sel.chapterAll
+        // 本轮实时上下文：未被「前缀化」的部分（前缀化开启时对应项为空，由会话前缀承载）
         val context = chatRepository.buildContext(
             bookIds = sel.bookIds,
-            chapterIds = if (frozenChapters) firstSnap?.chapterIds.orEmpty() else sel.chapterIds,
-            outlineIds = outlineIds,
-            includeContent = if (frozenChapters) firstSnap?.includeContent ?: false else sel.includeContent,
-            includeSummary = if (frozenChapters) firstSnap?.includeSummary ?: true else sel.includeSummary
+            chapterIds = sel.chapterIds,
+            outlineIds = sel.outlineIds,
+            includeContent = sel.includeContent,
+            includeSummary = sel.includeSummary
         )
+        // 会话前缀（字面文本，跨轮逐字节稳定）拼在实时上下文前面，共同作为「参考资料」
+        val reference = listOf(request.referencePrefix, context)
+            .filter { it.isNotBlank() }
+            .joinToString("\n")
         // 只取该用户消息之前的上下文，避免把同组的其他回答版本带进历史。
         // 0 表示不限：携带全部历史，长对话下前缀更稳定、缓存命中率更高
         val maxContext = configRepository.getModel(request.modelId)?.maxContext ?: 20
@@ -157,6 +148,10 @@ class SendChatMessageUseCase(
                 ChatTurn(it.role, if (extra.isBlank()) it.content else it.content + "\n\n" + extra)
             }
         val turns = buildList {
+            // 「自定义前缀」：纯文本，作为最前面的系统提示词随请求发送
+            if (request.prefixText.isNotBlank()) {
+                add(ChatTurn(ChatRole.SYSTEM, request.prefixText))
+            }
             // 「写入大纲工具」：勾选后随请求附带固定格式说明（保持勾选期间前缀稳定）
             if (request.writeOutlineTool) {
                 add(ChatTurn(ChatRole.SYSTEM, AI_OUTLINE_TOOL_PROMPT))
@@ -165,8 +160,8 @@ class SendChatMessageUseCase(
             if (request.chapterImportTool) {
                 add(ChatTurn(ChatRole.SYSTEM, AI_CHAPTER_TOOL_PROMPT))
             }
-            if (context.isNotBlank()) {
-                add(ChatTurn(ChatRole.SYSTEM, "以下是参考资料，请在写作时参考：\n$context"))
+            if (reference.isNotBlank()) {
+                add(ChatTurn(ChatRole.SYSTEM, "以下是参考资料，请在写作时参考：\n$reference"))
             }
             addAll(history)
             // 编辑后继续：历史以助手消息结尾时，补一个「继续」的轮次

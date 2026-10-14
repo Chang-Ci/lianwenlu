@@ -17,6 +17,8 @@ import com.lianwenqi.app.data.entity.ChatRole
 import com.lianwenqi.app.data.entity.ChatSession
 import com.lianwenqi.app.data.entity.ContextSnapshot
 import com.lianwenqi.app.data.entity.OutlineItem
+import com.lianwenqi.app.data.entity.PrefixEntry
+import com.lianwenqi.app.data.entity.SessionPrefix
 import com.lianwenqi.app.data.entity.decodeContextSnapshot
 import com.lianwenqi.app.data.entity.outlineCategoryLabel
 import com.lianwenqi.app.data.entity.Prompt
@@ -29,7 +31,6 @@ import com.lianwenqi.app.util.AiOutlineBlock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -219,6 +220,9 @@ class AiChatViewModel(
 
     /** 在途生成任务，供「停止响应」取消 */
     private var generateJob: Job? = null
+
+    /** 单调递增的「当前生成轮次」令牌：旧任务收尾时据此判断是否仍属于本轮，避免误清新任务的状态 */
+    private var generationToken = 0
 
     init {
         if (defaultBookId != null) selectedBookIds.value = setOf(defaultBookId)
@@ -576,23 +580,43 @@ class AiChatViewModel(
         if (t.isNotEmpty()) chatRepository.updateSessionTitle(id, t)
     }
 
-    /** 启动一次生成任务并记录 Job，便于「停止响应」随时取消 */
+    /**
+     * 启动一次生成任务并记录 Job，便于「停止响应」随时取消。
+     * 复位统一放在此处 launch 的 finally 里，并用 [generationToken] 判断归属：
+     * 被停止 / 被新任务接管的旧任务不会覆盖新任务的生成态，从根本上避免「一直正在生成中」。
+     */
     private fun launchGenerating(block: suspend CoroutineScope.() -> Unit) {
+        // 兜底：若已无在途任务但 sending 仍为 true（历史遗留的卡死态），先强制复位再继续
+        if (generateJob?.isActive != true && sending.value) resetGeneratingState()
         // 已有生成在途时忽略新请求，避免两个任务互相覆盖生成态
         if (generateJob?.isActive == true || sending.value) return
-        generateJob = viewModelScope.launch(block = block)
+        val token = ++generationToken
+        generateJob = viewModelScope.launch {
+            try {
+                block()
+            } finally {
+                if (token == generationToken) resetGeneratingState()
+            }
+        }
+    }
+
+    /** 复位「正在生成」相关的界面状态 */
+    private fun resetGeneratingState() {
+        sending.value = false
+        pendingReplyToId.value = 0L
+        streamingContent.value = ""
+        streamingReasoning.value = ""
     }
 
     /** 停止在途生成：取消协程，进而中断正在等待的 HTTP 请求 */
     fun stopGenerating() {
         val job = generateJob
         generateJob = null
+        // 递增令牌：使被取消任务的收尾不会误清新状态（这里已手动复位）
+        generationToken++
         job?.cancel()
         // 立即清除生成态，避免被取消的旧任务回调稍后才到、导致界面卡在「正在生成」
-        sending.value = false
-        pendingReplyToId.value = 0L
-        streamingContent.value = ""
-        streamingReasoning.value = ""
+        resetGeneratingState()
     }
 
     fun send(overrideText: String? = null, systemPrompt: String = "") = launchGenerating {
@@ -631,9 +655,6 @@ class AiChatViewModel(
             }
         }
 
-        // 「首轮全选大纲」：本次是会话第一条用户消息时，先把大纲写进快照，随后清空勾选。
-        // 后续轮次 UI 默认不勾选大纲，靠前缀复用保持稳定；用户重新勾选才改写前缀。
-        val isFirstUserMessage = chatRepository.getMessages(sid).none { it.role == ChatRole.USER }
         // 「＋本章梗概」：章节名与梗概作为附加提示词随消息落库（气泡里不显示），
         // 成为历史对话的一部分（不进最前面的参考资料前缀块）。
         // 下一轮从数据库重建历史时与上一轮实际发送的内容逐字节一致 → 前缀不被改写 → 缓存命中稳定。
@@ -643,13 +664,7 @@ class AiChatViewModel(
             promptExtra = chapterBlockSuffix()
         )
         if (overrideText == null) input.value = ""
-        // 「首轮全选」：首轮把「全选大纲 + 全选章节（仅梗概/仅正文按当时勾选）」写进最前面的前缀，
-        // 随后取消这两项勾选；后续轮次靠前缀复用保持稳定，只有重新勾选才改写前缀。
-        if (isFirstUserMessage && firstRoundPrefixEnabled()) {
-            selectedOutlineIds.value = emptySet()
-            selectedChapterIds.value = emptySet()
-            chapterAllSelected.value = false
-        }
+        // 勾选的书籍 / 章节 / 大纲会在发送时由 [prepareSessionPrefix] 冻结进会话前缀（只增不减）
         runGeneration(sid, modelId, systemPrompt, replyToUserId = userId, historyEndId = userId, variantIndex = 0)
     }
 
@@ -782,7 +797,6 @@ class AiChatViewModel(
         historyEndId: Long,
         variantIndex: Int
     ): Boolean {
-        val myJob = currentCoroutineContext()[Job]
         sending.value = true
         pendingReplyToId.value = replyToUserId
         streamingContent.value = ""
@@ -791,61 +805,130 @@ class AiChatViewModel(
         var ok = false
         val contentBuf = StringBuilder()
         val reasoningBuf = StringBuilder()
-        try {
-            val request = SendChatRequest(
-                sessionId = sid,
-                modelId = modelId,
-                systemPrompt = systemPrompt,
-                selection = currentSnapshot(),
-                replyToUserId = replyToUserId,
-                historyEndId = historyEndId,
-                variantIndex = variantIndex,
-                writeOutlineTool = writeOutlineToolOn(),
-                chapterImportTool = chapterImportToolOn(),
-                firstRoundPrefix = firstRoundPrefixEnabled()
-            )
-            sendChatMessage(request).collect { event ->
-                when (event) {
-                    is ChatEvent.Chunk -> {
-                        contentBuf.append(event.text)
-                        streamingContent.value = contentBuf.toString()
-                    }
-
-                    is ChatEvent.ReasoningChunk -> {
-                        reasoningBuf.append(event.text)
-                        streamingReasoning.value = reasoningBuf.toString()
-                    }
-
-                    // AI 工具：回答里带可导入标记块时，按勾选的工具挨个入队，UI 逐个询问是否导入
-                    is ChatEvent.OutlineBlocksReady ->
-                        pendingImports.value = pendingImports.value + PendingImport.Outline(event.blocks)
-
-                    is ChatEvent.ChapterBlocksReady ->
-                        pendingImports.value = pendingImports.value + PendingImport.Chapters(event.blocks)
-
-                    is ChatEvent.Error -> errorMessage.value = event.message
-
-                    ChatEvent.Done -> ok = true
+        // 会话前缀：只增不减地把当前勾选内容冻结进去，并取出本轮要发的自定义前缀与参考资料前缀
+        val prefix = prepareSessionPrefix(sid)
+        // 生成态的复位交由 [launchGenerating] 的 finally 统一处理（用 generationToken 判定归属）
+        val request = SendChatRequest(
+            sessionId = sid,
+            modelId = modelId,
+            systemPrompt = systemPrompt,
+            selection = liveSelection(prefix.contextOn, prefix.outlineOn),
+            replyToUserId = replyToUserId,
+            historyEndId = historyEndId,
+            variantIndex = variantIndex,
+            writeOutlineTool = writeOutlineToolOn(),
+            chapterImportTool = chapterImportToolOn(),
+            prefixText = prefix.custom,
+            referencePrefix = prefix.reference
+        )
+        sendChatMessage(request).collect { event ->
+            when (event) {
+                is ChatEvent.Chunk -> {
+                    contentBuf.append(event.text)
+                    streamingContent.value = contentBuf.toString()
                 }
-            }
-        } finally {
-            // 仅当仍是当前这次生成时才复位：若已被「停止响应」取消或已被新任务接管，则不要覆盖新的生成态
-            if (generateJob === myJob) {
-                sending.value = false
-                pendingReplyToId.value = 0L
-                streamingContent.value = ""
-                streamingReasoning.value = ""
+
+                is ChatEvent.ReasoningChunk -> {
+                    reasoningBuf.append(event.text)
+                    streamingReasoning.value = reasoningBuf.toString()
+                }
+
+                // AI 工具：回答里带可导入标记块时，按勾选的工具挨个入队，UI 逐个询问是否导入
+                is ChatEvent.OutlineBlocksReady ->
+                    pendingImports.value = pendingImports.value + PendingImport.Outline(event.blocks)
+
+                is ChatEvent.ChapterBlocksReady ->
+                    pendingImports.value = pendingImports.value + PendingImport.Chapters(event.blocks)
+
+                is ChatEvent.Error -> errorMessage.value = event.message
+
+                ChatEvent.Done -> ok = true
             }
         }
         return ok
     }
 
     /**
-     * 「首轮全选」是否生效：仅在章节内「跟书走」模式 + 用户开启该开关时启用，
-     * 避免影响「跟章节」模式的常规上下文选择。
+     * 会话级前缀：把当前勾选的书籍 / 章节 / 大纲按「前缀化」开关冻结进会话前缀。
+     * 只增不减 —— 取消勾选不移除已冻结条目；只有「重新勾选」（上次没勾、本次勾）的条目才
+     * 重新渲染并对比内容、有变更则原位替换；持续勾选的条目一律不再刷新，前缀最稳定。
+     * 新勾选内容追加在末尾。前缀随会话保存，新建对话即全新前缀，删除会话随之删除。
      */
-    private suspend fun firstRoundPrefixEnabled(): Boolean =
-        fixedChapterId != null && prefs.aiOutlineFirstRound.first() && prefs.aiFollowBook.first()
+    private suspend fun prepareSessionPrefix(sid: Long): PreparedPrefix {
+        val contextOn = prefs.prefixContextEnabled.first()
+        val outlineOn = prefs.prefixOutlineEnabled.first()
+        val session = chatRepository.getSession(sid)
+        val original = session?.prefix.orEmpty()
+        var sp = SessionPrefix.decode(original)
+        // 首次建立前缀时把设置里的「自定义前缀」取一次，之后冻结在本会话内
+        if (!sp.initialized) {
+            sp = sp.copy(custom = prefs.prefixCustomText.first().trim(), initialized = true)
+        }
+        if (contextOn) {
+            val bookIds = selectedBookIds.value.toList()
+            val chapterIds =
+                (if (chapterAllSelected.value) contextChapterIds() else selectedChapterIds.value).toList()
+            val newBookIds = bookIds.filterNot { it in sp.checkedBooks }
+            val newChapterIds = chapterIds.filterNot { it in sp.checkedChapters }
+            newBookIds.forEach { bid ->
+                chatRepository.renderBookEntry(bid)?.let { text ->
+                    sp = sp.copy(books = sp.books.upsert(PrefixEntry(bid, text)))
+                }
+            }
+            newChapterIds.forEach { cid ->
+                chatRepository.renderChapterEntry(cid, includeSummary.value, includeContent.value)
+                    ?.let { text -> sp = sp.copy(chapters = sp.chapters.upsert(PrefixEntry(cid, text))) }
+            }
+            sp = sp.copy(checkedBooks = bookIds, checkedChapters = chapterIds)
+        }
+        if (outlineOn) {
+            val outlineIds = selectedOutlineIds.value.toList()
+            val newOutlineIds = outlineIds.filterNot { it in sp.checkedOutlines }
+            newOutlineIds.forEach { oid ->
+                chatRepository.renderOutlineEntry(oid)?.let { text ->
+                    val category = _outline.value.firstOrNull { it.id == oid }?.category.orEmpty()
+                    sp = sp.copy(outlines = sp.outlines.upsert(PrefixEntry(oid, text, category)))
+                }
+            }
+            sp = sp.copy(checkedOutlines = outlineIds)
+        }
+        if (session != null && sp.encode() != original) {
+            chatRepository.updateSessionPrefix(sid, sp.encode())
+        }
+        return PreparedPrefix(
+            custom = sp.custom,
+            reference = sp.renderReference(includeChapters = contextOn, includeOutlines = outlineOn),
+            contextOn = contextOn,
+            outlineOn = outlineOn
+        )
+    }
+
+    /**
+     * 本轮「实时上下文」：前缀化开启的部分不再每轮重算（交由会话前缀承载），
+     * 未前缀化时按当前勾选实时拼装。
+     */
+    private fun liveSelection(contextOn: Boolean, outlineOn: Boolean): ContextSnapshot {
+        val snap = currentSnapshot()
+        val chapterIds = when {
+            contextOn -> emptyList()
+            snap.chapterAll -> contextChapterIds().toList()
+            else -> snap.chapterIds
+        }
+        return snap.copy(
+            bookIds = if (contextOn) emptyList() else snap.bookIds,
+            chapterIds = chapterIds,
+            outlineIds = if (outlineOn) emptyList() else snap.outlineIds,
+            chapterAll = if (contextOn) false else snap.chapterAll
+        )
+    }
+
+    /** 会话前缀准备结果：自定义前缀文本 + 参考资料前缀 + 两个前缀化开关状态 */
+    private data class PreparedPrefix(
+        val custom: String,
+        val reference: String,
+        val contextOn: Boolean,
+        val outlineOn: Boolean
+    )
 
     /**
      * 「＋本章梗概」：勾选时随消息发送但不在气泡显示的附加提示词（含章节名与梗概）。
@@ -860,6 +943,15 @@ class AiChatViewModel(
             if (ch.summary.isNotBlank()) append('\n').append("梗概：").append(ch.summary)
         }
     }
+}
+
+/** 前缀条目「只增不减」的更新：不存在则追加，内容有变更则原位替换，否则原样返回 */
+private fun List<PrefixEntry>.upsert(entry: PrefixEntry): List<PrefixEntry> {
+    val index = indexOfFirst { it.id == entry.id }
+    if (index < 0) return this + entry
+    val old = this[index]
+    if (old.text == entry.text && old.category == entry.category) return this
+    return toMutableList().also { it[index] = entry }
 }
 
 private fun Set<Long>.toggle(id: Long): Set<Long> =

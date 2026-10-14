@@ -30,6 +30,8 @@ import com.lianwenqi.app.ui.screens.BookDetailScreen
 import com.lianwenqi.app.ui.screens.BookSearchScreen
 import com.lianwenqi.app.ui.screens.BookshelfScreen
 import com.lianwenqi.app.ui.screens.ChapterEditorScreen
+import com.lianwenqi.app.ui.screens.CheckUpdateScreen
+import com.lianwenqi.app.ui.screens.PrefixManageScreen
 import com.lianwenqi.app.ui.screens.ReaderScreen
 import com.lianwenqi.app.ui.screens.SettingsScreen
 
@@ -40,6 +42,8 @@ object Routes {
     const val READER = "reader/{bookId}/{chapterId}"
     const val BOOK_SEARCH = "booksearch/{bookId}"
     const val AI_TOOLS = "aitools"
+    const val PREFIX_MANAGE = "prefix"
+    const val UPDATE = "update"
 
     fun book(id: Long) = "book/$id"
     fun editor(bookId: Long, chapterId: Long) = "editor/$bookId/$chapterId"
@@ -63,6 +67,14 @@ fun RootNavHost() {
 
         composable(Routes.AI_TOOLS) {
             AiToolsScreen(onBack = { rootNav.popBackStack() })
+        }
+
+        composable(Routes.PREFIX_MANAGE) {
+            PrefixManageScreen(onBack = { rootNav.popBackStack() })
+        }
+
+        composable(Routes.UPDATE) {
+            CheckUpdateScreen(onBack = { rootNav.popBackStack() })
         }
 
         composable(
@@ -175,7 +187,11 @@ private fun MainShell(rootNav: NavHostController) {
             }
             composable("ai") { AiChatScreen(initialBookId = null) }
             composable("settings") {
-                SettingsScreen(onOpenAiTools = { rootNav.navigate(Routes.AI_TOOLS) })
+                SettingsScreen(
+                    onOpenAiTools = { rootNav.navigate(Routes.AI_TOOLS) },
+                    onOpenPrefix = { rootNav.navigate(Routes.PREFIX_MANAGE) },
+                    onOpenUpdate = { rootNav.navigate(Routes.UPDATE) }
+                )
             }
         }
     }

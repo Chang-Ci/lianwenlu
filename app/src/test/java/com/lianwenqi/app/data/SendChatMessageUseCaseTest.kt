@@ -116,8 +116,7 @@ class SendChatMessageUseCaseTest {
         writeOutlineTool: Boolean = false,
         chapterImportTool: Boolean = false,
         replyToUserId: Long = 0L,
-        historyEndId: Long = 1L,
-        firstRoundPrefix: Boolean = false
+        historyEndId: Long = 1L
     ) = SendChatRequest(
         sessionId = 1L,
         modelId = 1L,
@@ -127,8 +126,7 @@ class SendChatMessageUseCaseTest {
         historyEndId = historyEndId,
         variantIndex = 0,
         writeOutlineTool = writeOutlineTool,
-        chapterImportTool = chapterImportTool,
-        firstRoundPrefix = firstRoundPrefix
+        chapterImportTool = chapterImportTool
     )
 
     // ---------------- 场景 1：正常发送 ----------------

@@ -51,6 +51,9 @@ class ChatRepository(private val db: AppDatabase) : ChatGateway {
     /** 修改会话标题 */
     suspend fun updateSessionTitle(id: Long, title: String) = chatDao.updateSessionTitle(id, title)
 
+    /** 更新会话级「前缀」（只增不减的前缀冻结数据） */
+    suspend fun updateSessionPrefix(id: Long, prefix: String) = chatDao.updateSessionPrefix(id, prefix)
+
     suspend fun deleteSession(id: Long) {
         chatDao.clearMessages(id)
         chatDao.deleteSession(id)
@@ -178,5 +181,46 @@ class ChatRepository(private val db: AppDatabase) : ChatGateway {
             if (includeContent) sb.append("正文：").append(ch.content).append('\n')
         }
         return sb.toString()
+    }
+
+    // ---------------- 会话前缀条目渲染（冻结时按当时的字面文本存档） ----------------
+
+    /** 书籍条目：与 [buildContext] 的书籍部分保持一致 */
+    suspend fun renderBookEntry(bookId: Long): String? {
+        val book = bookDao.getById(bookId) ?: return null
+        return buildString {
+            append("《").append(book.title).append("》")
+            if (book.intro.isNotBlank()) append("（简介：").append(book.intro).append("）")
+            append('\n')
+        }
+    }
+
+    /** 单条大纲条目：不含分类标题（拼接时按相邻分类去重输出） */
+    suspend fun renderOutlineEntry(outlineId: Long): String? {
+        val item = outlineDao.getById(outlineId) ?: return null
+        val fields = decodeOutlineFields(item.content)
+        val head = fields.firstOrNull()?.second?.ifBlank { item.title } ?: item.title
+        return buildString {
+            append("｛").append(head).append("｝").append('\n')
+            fields.drop(1).forEach { f ->
+                append(f.first).append("：").append(f.second).append('\n')
+            }
+        }
+    }
+
+    /** 单条章节条目：与 [buildContext] 的章节部分保持一致 */
+    suspend fun renderChapterEntry(
+        chapterId: Long,
+        includeSummary: Boolean,
+        includeContent: Boolean
+    ): String? {
+        val ch = chapterDao.getById(chapterId) ?: return null
+        return buildString {
+            append("【章节】").append(ch.title).append('\n')
+            if (includeSummary && ch.summary.isNotBlank()) {
+                append("梗概：").append(ch.summary).append('\n')
+            }
+            if (includeContent) append("正文：").append(ch.content).append('\n')
+        }
     }
 }

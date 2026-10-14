@@ -3,6 +3,8 @@ package com.lianwenqi.app.data.entity
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 
 /** 书籍分组 */
 @Entity(tableName = "book_group")
@@ -154,6 +156,11 @@ data class ChatSession(
     /** 从章节内发起的会话所绑定的章节；为空表示从导航栏发起（不记忆） */
     val chapterId: Long? = null,
     val modelId: Long? = null,
+    /**
+     * 会话级「前缀」：已冻结的参考资料条目与自定义前缀（JSON，见 [SessionPrefix]）。
+     * 只属于当前会话，新建对话即全新的空前缀，删除会话随之删除。
+     */
+    val prefix: String = "",
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()
 )
@@ -230,4 +237,75 @@ fun decodeContextSnapshot(raw: String): ContextSnapshot {
         includeContent = parts.getOrNull(4) != "0",
         chapterAll = parts.getOrNull(5) == "1"
     )
+}
+
+/**
+ * 会话前缀里的一个冻结条目：记录的 id 与「冻结当时渲染出来的字面文本」。
+ * 存字面文本而不是每轮按 id 重算，才能保证前缀逐字节稳定、不被后续改动打破。
+ */
+@Serializable
+data class PrefixEntry(
+    val id: Long,
+    /** 冻结当时渲染的文本（书籍含简介，大纲含字段行，章节含梗概/正文） */
+    val text: String,
+    /** 大纲条目的分类存储值（拼接时据相邻关系输出分类标题）；书籍 / 章节条目为空 */
+    val category: String = ""
+)
+
+/**
+ * 会话级前缀：只增不减 —— 取消勾选不移除已冻结条目；只有「重新勾选」时才对比内容并原位替换，
+ * 新勾选的内容追加在末尾，持续勾选的条目一律不再刷新，从而不破坏已有前缀的字节结构（利于缓存命中）。
+ * 随 [ChatSession.prefix] 落库，会话删除即随之删除，新建对话则是全新的空前缀。
+ */
+@Serializable
+data class SessionPrefix(
+    /** 自定义前缀（纯文本）：建立前缀时从设置取一次后冻结在本会话，之后不随设置变化 */
+    val custom: String = "",
+    /** 是否已建立：为 false 时下次发送才会取一次设置里的自定义前缀 */
+    val initialized: Boolean = false,
+    val books: List<PrefixEntry> = emptyList(),
+    val outlines: List<PrefixEntry> = emptyList(),
+    val chapters: List<PrefixEntry> = emptyList(),
+    /**
+     * 上一次发送时勾选的 id 集合（用于判断「本次是否为重新勾选」）：
+     * 只有从「上次没勾选」变成「本次勾选」的条目才对比内容并写入，
+     * 持续勾选的条目一律不再刷新，保证前缀最稳定。
+     */
+    val checkedBooks: List<Long> = emptyList(),
+    val checkedOutlines: List<Long> = emptyList(),
+    val checkedChapters: List<Long> = emptyList()
+) {
+    fun encode(): String = prefixJson.encodeToString(serializer(), this)
+
+    /** 拼接「参考资料」文本；[includeChapters] / [includeOutlines] 对应该前缀化开关 */
+    fun renderReference(includeChapters: Boolean, includeOutlines: Boolean): String {
+        val sb = StringBuilder()
+        if (includeChapters) books.forEach { sb.append(it.text) }
+        if (includeOutlines) {
+            var prevCategory: String? = null
+            outlines.forEach { entry ->
+                if (entry.category != prevCategory) {
+                    sb.append("【").append(outlineCategoryLabel(entry.category)).append("】\n")
+                }
+                sb.append(entry.text)
+                prevCategory = entry.category
+            }
+        }
+        if (includeChapters) chapters.forEach { sb.append(it.text) }
+        return sb.toString().trimEnd('\n')
+    }
+
+    companion object {
+        /** 解析 [ChatSession.prefix]；空值或损坏时回落到空前缀 */
+        fun decode(raw: String): SessionPrefix {
+            if (raw.isBlank()) return SessionPrefix()
+            return runCatching { prefixJson.decodeFromString(serializer(), raw) }
+                .getOrDefault(SessionPrefix())
+        }
+    }
+}
+
+private val prefixJson = Json {
+    ignoreUnknownKeys = true
+    encodeDefaults = true
 }

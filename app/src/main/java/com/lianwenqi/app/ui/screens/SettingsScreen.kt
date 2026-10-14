@@ -125,7 +125,11 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(onOpenAiTools: () -> Unit = {}) {
+fun SettingsScreen(
+    onOpenAiTools: () -> Unit = {},
+    onOpenPrefix: () -> Unit = {},
+    onOpenUpdate: () -> Unit = {}
+) {
     val vm = appViewModel { SettingsViewModel(it) }
     val providers by vm.providers.collectAsState()
     val models by vm.models.collectAsState()
@@ -206,8 +210,8 @@ fun SettingsScreen(onOpenAiTools: () -> Unit = {}) {
                                 Column(Modifier.weight(1f)) {
                                     Text("首轮全选大纲与章节")
                                     Text(
-                                        "仅第一轮对话发起时，把全选大纲与全选章节（仅梗概/仅正文按当时勾选）" +
-                                            "写入前缀；随后自动取消这两项勾选，后续轮次直接复用已写入前缀的内容，" +
+                                        "新建「跟书」会话时默认全选大纲与章节（仅梗概/仅正文按当时勾选）。" +
+                                            "两项内容随后由「前缀词管理」在首轮写入会话前缀并保持稳定，" +
                                             "只有重新勾选才改写前缀。「本章梗概」只写进本轮提示词、不进前缀，避免打断缓存。",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -226,6 +230,31 @@ fun SettingsScreen(onOpenAiTools: () -> Unit = {}) {
                             Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(8.dp))
+                                .clickable(onClick = onOpenPrefix)
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text("前缀词管理")
+                                Text(
+                                    "上下文前缀化、大纲前缀化与自定义前缀",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Icon(
+                                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        HorizontalDivider()
+                        Spacer(Modifier.height(12.dp))
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
                                 .clickable(onClick = onOpenAiTools)
                                 .padding(vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
@@ -234,6 +263,31 @@ fun SettingsScreen(onOpenAiTools: () -> Unit = {}) {
                                 Text("AI工具")
                                 Text(
                                     "写入大纲等 AI 辅助工具",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Icon(
+                                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        HorizontalDivider()
+                        Spacer(Modifier.height(12.dp))
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable(onClick = onOpenUpdate)
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text("检查更新")
+                                Text(
+                                    "从 GitHub 获取最新版本，有新版本可直接下载安装",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )

@@ -74,6 +74,13 @@ class Prefs(private val context: Context) {
         // AI 聊天页勾选的 AI 工具 id 集合（可多选，跨会话保持）
         val aiChatTools = stringSetPreferencesKey("ai_chat_tools")
 
+        // 前缀词管理：上下文前缀化 / 大纲前缀化（均默认开启）
+        val prefixContextEnabled = booleanPreferencesKey("prefix_context_enabled")
+        val prefixOutlineEnabled = booleanPreferencesKey("prefix_outline_enabled")
+
+        // 前缀词管理：自定义前缀（纯文本）
+        val prefixCustomText = stringPreferencesKey("prefix_custom_text")
+
         // 阅读器独立的样式与排版：与编辑页各存一套，互不影响
         val rFontSize = floatPreferencesKey("reader_style_font_size")
         val rFontLabel = stringPreferencesKey("reader_style_font_label")
@@ -120,6 +127,17 @@ class Prefs(private val context: Context) {
 
     /** AI 聊天页勾选的 AI 工具 id 集合 */
     val aiChatTools: Flow<Set<String>> = context.dataStore.data.map { it[K.aiChatTools] ?: emptySet() }
+
+    /** 「上下文前缀化」：勾选的书籍 / 章节写进会话前缀后只增不减（默认开启） */
+    val prefixContextEnabled: Flow<Boolean> =
+        context.dataStore.data.map { it[K.prefixContextEnabled] ?: true }
+
+    /** 「大纲前缀化」：勾选的大纲写进会话前缀后只增不减（默认开启） */
+    val prefixOutlineEnabled: Flow<Boolean> =
+        context.dataStore.data.map { it[K.prefixOutlineEnabled] ?: true }
+
+    /** 「自定义前缀」：纯文本，新建会话前缀时取一次并冻结在该会话中 */
+    val prefixCustomText: Flow<String> = context.dataStore.data.map { it[K.prefixCustomText] ?: "" }
 
     /** 阅读器排版：与编辑页排版互相独立 */
     val readerFormat: Flow<FormatSettings> = context.dataStore.data.map {
@@ -188,6 +206,9 @@ class Prefs(private val context: Context) {
     suspend fun setAiToolOutlineEnabled(v: Boolean) = writePrefs { it[K.aiToolOutlineEnabled] = v }
     suspend fun setAiToolChapterEnabled(v: Boolean) = writePrefs { it[K.aiToolChapterEnabled] = v }
     suspend fun setAiChatTools(v: Set<String>) = writePrefs { it[K.aiChatTools] = v }
+    suspend fun setPrefixContextEnabled(v: Boolean) = writePrefs { it[K.prefixContextEnabled] = v }
+    suspend fun setPrefixOutlineEnabled(v: Boolean) = writePrefs { it[K.prefixOutlineEnabled] = v }
+    suspend fun setPrefixCustomText(v: String) = writePrefs { it[K.prefixCustomText] = v }
     suspend fun setLastOpened(bookId: Long, chapterId: Long) = writePrefs {
         it[K.lastBookId] = bookId
         it[K.lastChapterId] = chapterId

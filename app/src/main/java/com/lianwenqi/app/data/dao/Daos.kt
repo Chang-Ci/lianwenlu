@@ -282,6 +282,10 @@ interface ChatDao {
     @Query("UPDATE chat_session SET title = :title WHERE id = :id")
     suspend fun updateSessionTitle(id: Long, title: String)
 
+    /** 更新会话级「前缀」（自定义前缀 + 已冻结条目） */
+    @Query("UPDATE chat_session SET prefix = :prefix WHERE id = :id")
+    suspend fun updateSessionPrefix(id: Long, prefix: String)
+
     @Query("DELETE FROM chat_session WHERE id = :id")
     suspend fun deleteSession(id: Long)
 

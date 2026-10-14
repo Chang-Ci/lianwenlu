@@ -9,6 +9,7 @@ import com.lianwenqi.app.data.ChatRepository
 import com.lianwenqi.app.data.ConfigRepository
 import com.lianwenqi.app.data.OutlineRepository
 import com.lianwenqi.app.data.Prefs
+import com.lianwenqi.app.update.UpdateChecker
 
 /** 简单的依赖容器（ServiceLocator），供 ViewModel 获取 */
 class AppContainer(val app: Application) {
@@ -20,6 +21,7 @@ class AppContainer(val app: Application) {
     val outlineRepository: OutlineRepository = OutlineRepository(database)
     val configRepository: ConfigRepository = ConfigRepository(database, aiClient)
     val prefs: Prefs = Prefs(app)
+    val updateChecker: UpdateChecker = UpdateChecker(app)
 }
 
 class LianWenQiApplication : Application() {
